@@ -42,6 +42,10 @@
 
   * { box-sizing: border-box; }
   html, body { margin: 0; }
+  /* The story is the scroll, so the native scrollbar only covers the ASCII at the right edge.
+     Wheel, touch and keyboard still scroll; the ASCII mouse is the cue. */
+  html { scrollbar-width: none; }
+  html::-webkit-scrollbar { display: none; }
   body {
     background: var(--bg);
     color: var(--text);
