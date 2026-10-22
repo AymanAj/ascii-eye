@@ -662,6 +662,20 @@
       put(a + 1, cc + 1, '/');
       put(a + 2, cc, 'v');
     }
+    // A one-cell clearing around the strokes, so the chevron reads as a sign and not as more SPAWN texture.
+    for (let i = 0; i < n; i++) {
+      if (cueK[i] !== -1) continue;
+      const r = (i / fCols) | 0, c = i % fCols;
+      for (let dr = -1; dr <= 1 && cueK[i] === -1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          const rr = r + dr, c2 = c + dc;
+          if (rr >= 0 && rr < fRows && c2 >= 0 && c2 < fCols && cueK[rr * fCols + c2] >= 0) {
+            cueK[i] = -2;
+            break;
+          }
+        }
+      }
+    }
     storyP = NaN;
     bgDirty = true;
     lastField = -Infinity;
@@ -779,11 +793,16 @@
           rowChars[col] = ' ';
           continue;
         }
-        // The chevrons light top to bottom, then rest, so the cue reads as rolling down; static when still.
+        // The chevrons light top to bottom so the cue reads as rolling down: four rolls once the eye is
+        // awake, then they rest lit, so the cue never competes with the eye for good. Static when still.
         const k = cueK[i];
-        if (k >= 0 && !sceneBroken) {
+        if (k !== -1 && !sceneBroken) {
+          if (k === -2) {
+            rowChars[col] = ' ';
+            continue;
+          }
           const phase = (t / 1.8) % 1;
-          if (still || (phase >= 0.12 + 0.2 * k && phase < 0.8)) {
+          if (still || t - introAt > 1.2 + 4 * 1.8 || (phase >= 0.12 + 0.2 * k && phase < 0.8)) {
             rowChars[col] = String.fromCharCode(cueCh[i]);
             continue;
           }
@@ -992,7 +1011,10 @@
 
   // Where the knocks land on the screen: beside the hover spot, so the ship has a short way to recede.
   const impactAt = (w, h, ua) => ({ x: ua.x + 0.1 * w, y: ua.y + 0.12 * h });
-  const KNOCKS = [0.3775, 0.4125, 0.435]; // the scroll positions of the three knocks on the glass
+  // The scroll positions of the three knocks on the glass. Each crack ramp starts exactly here, and the
+  // flare, lamp stutter and jolt only fire after, so the hit always comes before what it causes.
+  const KNOCKS = [0.37, 0.405, 0.43];
+  const afterKnock = (P, c, span) => (P >= c ? 1 - smoothstep(0, span, P - c) : 0);
 
   // Where the ship is at progress P: it comes from our side of the screen, so it bursts through the
   // impact point close to us (big) and recedes into the room to its hover spot by 0.60. That is an
@@ -1033,10 +1055,9 @@
         if (after >= 0 && after < 0.012) {
           const j = 1 - after / 0.012; // the shake dies out as you scroll past the hit
           jx += 9 * j * Math.sin(after * 2400);
-          jy += 6 * j * Math.cos(after * 3100);
+          jy += 10 * j * Math.cos(after * 3100); // about a row: less falls between cells and never shows
         }
-        const near = 1 - smoothstep(0, 0.012, Math.abs(after));
-        flick = Math.max(flick, near * (Math.sin(after * 900) > 0 ? 0.5 : 0.12));
+        flick = Math.max(flick, afterKnock(P, c, 0.012) * (Math.sin(after * 900) > 0 ? 0.5 : 0.12));
       }
     }
     ctx.translate(jx, jy);
@@ -1063,6 +1084,15 @@
     if (leak > 0) {
       const i = impactAt(w, h, ua);
       const R = Math.hypot(w, h) * (0.35 + 0.25 * approach);
+      // Lime added over a lit purple wall stays purple to the renderer, so first pull red and blue out of
+      // what the light falls on (as the beam does); then the leak reads lime from the first knock.
+      ctx.globalCompositeOperation = 'multiply';
+      const tint = ctx.createRadialGradient(i.x, i.y, 0, i.x, i.y, R);
+      tint.addColorStop(0, `rgba(110, 255, 120, ${0.9 * leak})`);
+      tint.addColorStop(1, 'rgba(110, 255, 120, 0)');
+      ctx.fillStyle = tint;
+      ctx.fillRect(-w, -h, w * 3, h * 3);
+      ctx.globalCompositeOperation = 'source-over';
       const glowFill = ctx.createRadialGradient(i.x, i.y, 0, i.x, i.y, R);
       glowFill.addColorStop(0, `rgba(120, 230, 60, ${0.75 * leak})`);
       glowFill.addColorStop(0.5, `rgba(120, 230, 60, ${0.3 * leak})`);
@@ -1180,15 +1210,14 @@
     // The screen itself is the glass: three knocks from outside spread the cracks, then the pane blows
     // inward as the ship comes through. Drawn last and outside the room camera, because it is our side.
     if (AsciiParts.drawShatter) {
-      const knock = (a, b) => smoothstep(a, b, P);
       const i = impactAt(w, h, ua);
       AsciiParts.drawShatter(ctx, w, h, {
         x: i.x,
         y: i.y,
         // The knocks build: a small star, a wider web, then the whole pane.
-        crack: 0.1 * knock(0.37, 0.385) + 0.22 * knock(0.405, 0.42) + 0.68 * knock(0.43, 0.44),
-        // Each knock flares at the impact while the scroll passes it, so the hits read as hits.
-        hit: Math.max(...KNOCKS.map((c) => 1 - smoothstep(0, 0.012, Math.abs(P - c)))),
+        crack: 0.1 * knocked(0.37, 0.385) + 0.22 * knocked(0.405, 0.42) + 0.68 * knocked(0.43, 0.44),
+        // Each knock flares at the impact just after it lands, so the hits read as hits.
+        hit: Math.max(...KNOCKS.map((c) => afterKnock(P, c, 0.012))),
         burst: seg(P, 0.44, 0.6),
         reduced: still,
       });
