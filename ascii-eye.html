@@ -30,6 +30,8 @@
     --lime: #a3e635;
     --lime-hi: #d9f99d;
     --glint: #ffffff;
+    --err: #ff5c7a;                       /* 6.7:1 on the page */
+    --err-field: rgba(255, 92, 122, 0.3);
 
     --btn-bg: #150c25;
     --btn-bg-hover: #22133d;
@@ -73,7 +75,7 @@
     pointer-events: none;
     user-select: none;
   }
-  #field { color: var(--field); }
+  #field { color: var(--field); transition: color 700ms ease; }
   #ecg .h { color: var(--ecg-head); }
   #ecg .a { color: var(--ecg-hot); }
   #ecg .b { color: var(--ecg-mid); }
@@ -101,7 +103,7 @@
   }
   /* Glow only the strokes that read as light (the sclera dots are most of the glyphs and gain nothing),
      and let it follow each span's colour so a lime iris glows lime. */
-  .eye .l, .eye .h, .eye .i, .eye .j {
+  .eye .l, .eye .h, .eye .i, .eye .j, .eye .x {
     text-shadow: 0 0 10px color-mix(in srgb, currentColor 45%, transparent);
   }
   .eye .l { color: var(--lid); }
@@ -114,6 +116,16 @@
   [data-iris="lime"] .eye .i { color: var(--lime); }
   [data-iris="lime"] .eye .j { color: var(--lime-hi); }
   .eye .g { color: var(--glint); text-shadow: 0 0 8px #fff; }
+  .eye .x { color: var(--err); } /* the X of a crashed eye */
+
+  /* Overload: blinking too fast crashes the eye. The alarm comes on at once, because it is the page
+     answering the spam, and fades out slowly with the heartbeat that brings everything back. */
+  body[data-sys] #field { color: var(--err-field); transition-duration: 90ms; }
+  body[data-sys] {
+    --ecg-hot: #ffc4cf;
+    --ecg-mid: rgba(255, 118, 146, 0.78);
+    --ecg-dim: rgba(255, 92, 122, 0.36);
+  }
 
   /* Scrolling hands the eye to a full-screen grid aligned cell for cell, so it can zoom past its box.
      It sits above the scene canvas: the pupil is empty cells, so the room shows through it as you fall
@@ -127,11 +139,11 @@
     visibility: hidden;
   }
   /* Glow fades out early in the dive; once it is invisible it is dropped so the zoomed glyphs paint cheaply. */
-  .dive .l, .dive .h, .dive .i, .dive .j {
+  .dive .l, .dive .h, .dive .i, .dive .j, .dive .x {
     text-shadow: 0 0 10px color-mix(in srgb, currentColor calc(var(--glow, 1) * 45%), transparent);
   }
   .dive.noglow .l, .dive.noglow .h, .dive.noglow .i, .dive.noglow .j,
-  .dive.noglow .g { text-shadow: none; }
+  .dive.noglow .x, .dive.noglow .g { text-shadow: none; }
 
   .scene {
     position: fixed;
@@ -185,14 +197,20 @@
   }
   .btn:active { transform: scale(0.97); }
   .btn:focus-visible { outline: 2px solid var(--iris-hi); outline-offset: 3px; }
+  .btn .hot { color: var(--err); } /* letters corrupted by heat, and the crashed label */
+  .btn[aria-disabled="true"] {
+    cursor: not-allowed;
+    border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  }
 
   .hint {
     margin: 0;
     font-size: 12px;
     color: var(--muted);
-    transition: opacity 250ms var(--ease-out);
+    transition: opacity 250ms var(--ease-out), color 150ms ease;
   }
   .hint.gone { opacity: 0; }
+  body[data-sys] .hint { color: var(--err); } /* the reboot bar */
 
   /* Music toggle: just glyphs, no box, so it sits in the art instead of on top of it. The halo separates
      it from the ASCII behind. Still when stopped; while playing its equalizer moves with the music, so
@@ -258,6 +276,7 @@
     <p class="sr-only" id="story">Scroll down to dive through the pupil: in an ASCII bedroom a person floats above the
       bed, a flying saucer arrives, and its lime beam lifts them up into the ship until light fills the screen
       and the word SPAWN appears.</p>
+    <p class="sr-only" id="sysStatus" role="status"></p>
   </main>
   <pre class="eye dive" id="dive" aria-hidden="true"></pre>
   <canvas class="scene" id="scene" aria-hidden="true"></canvas>
@@ -363,6 +382,7 @@
     let v = 0;
     for (let i = k - 1; i <= k; i++) {
       const tb = i * PERIOD;
+      if (beatDead(tb)) continue; // flatlined
       v += kick(t - tb) + 0.6 * kick(t - tb - DUB);
     }
     return v;
@@ -399,9 +419,20 @@
 
   const wrap = (s, k) => (!s ? '' : k ? `<span class="${k}">${s}</span>` : s);
 
+  // The X a crashed eye shows where the iris was: two strokes at 45 degrees on screen, two cells thick.
+  // The windows are half-open and mirrored, so every row gets exactly two cells per stroke and the
+  // centre row reads "\X/".
+  function crossAt(u, v, th) {
+    if (Math.abs(v) >= IR * 0.72) return '';
+    const a = u - v >= -th && u - v < th;
+    const b = u + v > -th && u + v <= th;
+    return a && b ? 'X' : a ? '\\' : b ? '/' : '';
+  }
+
   // Draws the eye into any grid: (cx, cy) is the eye centre in grid cells and zoom scales the geometry,
-  // so the same code paints the resting eye and the full-screen dive.
-  function renderEye(el, cols, rows, cx, cy, zoom, ix, iy, closure, pupil, gaze) {
+  // so the same code paints the resting eye and the full-screen dive. `dead` swaps the iris for an X;
+  // `tear` shifts whole rows sideways by a few cells, for the glitch as it crashes.
+  function renderEye(el, cols, rows, cx, cy, zoom, ix, iy, closure, pupil, gaze, dead = false, tear = null) {
     const hTop = HT * (1 - 0.1 * gaze); // the lid lifts when looking up
     const ew2 = EW * EW;
     const lid = (x) => Math.max(0, 1 - (x * x) / ew2);
@@ -463,19 +494,24 @@
 
     for (let row = 0; row < rows; row++) {
       const y = (row - cy) / zoom;
+      const shift = tear ? tear[row] : 0;
       let run = '', cls = '';
       for (let col = 0; col < cols; col++) {
-        const x = ((col - cx) * AR) / zoom;
+        const c = col - shift; // a torn row samples the eye a few cells over
+        const x = ((c - cx) * AR) / zoom;
         let chr = ' ', k = '';
-        const line = cells.get(row * cols + col);
+        const line = c >= 0 && c < cols ? cells.get(row * cols + c) : undefined;
 
         if (line) {
           [chr, k] = line;
         } else {
           const tc = topAt(x), bc = botAt(x);
           if (Math.abs(x) < EW && y > tc && y < bc) {
-            const d = Math.hypot(x - ix, y - iy);
-            if (d < IR && Math.hypot(x - g1x, y - g1y) < 0.95) {
+            const d = dead ? Infinity : Math.hypot(x - ix, y - iy); // dead: no iris, no shine, just the X
+            const cross = dead ? crossAt(x - ix, y - iy, AR / zoom) : '';
+            if (cross) {
+              chr = cross; k = 'x';
+            } else if (d < IR && Math.hypot(x - g1x, y - g1y) < 0.95) {
               chr = '@'; k = 'g';
             } else if (d < IR && Math.hypot(x - g2x, y - g2y) < 0.5) {
               chr = '*'; k = 'g';
@@ -536,36 +572,42 @@
     [0.03, 0.96, 'left', 0.55],
   ];
   const spawnPhase = SPAWNS.map((_, k) => [7 + ((k * 2.3) % 6), k * 1.7]); // [period s, phase]
-  let spawnMask, spawnId;
+  const ERR_WORD = 'ERROR'; // what the same spots spell while the eye is crashed; also five letters
+  let spawnMask, spawnId, errMask;
 
-  // Rasterise each SPAWN straight onto the character grid: one canvas pixel per cell.
+  // Rasterise each SPAWN (and its ERROR twin) straight onto the character grid: one canvas pixel per cell.
   function buildSpawn(w, h) {
     const cv = document.createElement('canvas');
     cv.width = fCols;
     cv.height = fRows;
     const ctx = cv.getContext('2d', { willReadFrequently: true });
-    spawnMask = new Float32Array(fCols * fRows);
-    spawnId = new Int8Array(fCols * fRows).fill(-1);
     const base = Math.max(60, Math.min(260, h * 0.26, w * 0.14));
-    SPAWNS.forEach(([fx, fy, align, scale], k) => {
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, fCols, fRows);
-      ctx.setTransform(1 / cw, 0, 0, 1 / ch, 0, 0); // draw in screen px, land in cells
-      ctx.font = `900 ${base * scale}px "Arial Black", "Segoe UI Black", Impact, sans-serif`;
-      ctx.letterSpacing = `${Math.round(base * scale * 0.1)}px`; // open gaps so letters don't fuse into a block
-      ctx.textAlign = align;
-      ctx.textBaseline = fy < 0.5 ? 'top' : 'bottom';
-      ctx.fillStyle = '#fff';
-      ctx.fillText(WORD, fx * w, fy * h);
-      const data = ctx.getImageData(0, 0, fCols, fRows).data;
-      for (let i = 0; i < spawnMask.length; i++) {
-        const a = data[i * 4 + 3] / 255;
-        if (a > spawnMask[i]) {
-          spawnMask[i] = a;
-          spawnId[i] = k;
+    const raster = (word) => {
+      const m = new Float32Array(fCols * fRows);
+      const id = new Int8Array(fCols * fRows).fill(-1);
+      SPAWNS.forEach(([fx, fy, align, scale], k) => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, fCols, fRows);
+        ctx.setTransform(1 / cw, 0, 0, 1 / ch, 0, 0); // draw in screen px, land in cells
+        ctx.font = `900 ${base * scale}px "Arial Black", "Segoe UI Black", Impact, sans-serif`;
+        ctx.letterSpacing = `${Math.round(base * scale * 0.1)}px`; // open gaps so letters don't fuse into a block
+        ctx.textAlign = align;
+        ctx.textBaseline = fy < 0.5 ? 'top' : 'bottom';
+        ctx.fillStyle = '#fff';
+        ctx.fillText(word, fx * w, fy * h);
+        const data = ctx.getImageData(0, 0, fCols, fRows).data;
+        for (let i = 0; i < m.length; i++) {
+          const a = data[i * 4 + 3] / 255;
+          if (a > m[i]) {
+            m[i] = a;
+            id[i] = k;
+          }
         }
-      }
-    });
+      });
+      return [m, id];
+    };
+    [spawnMask, spawnId] = raster(WORD);
+    [errMask] = raster(ERR_WORD);
   }
 
   let fCols = 0, fRows = 0, cw = 8.4, ch = 14, ecgRow = 0;
@@ -719,6 +761,9 @@
 
   function renderBackground(t, still, withField, shockAges) {
     occ.fill(0);
+    // While the eye is crashed the heart flatlines. The line comes back just before the first beat after
+    // the reboot, so that beat draws its whole P-QRS-T shape.
+    const ecgLive = (tc) => ((still ? sys !== 'ok' : tc >= failAt && tc < okAt - 0.2) ? 0 : ecgAt(tc));
 
     // ECG trace: each column keeps the moment the writing head passed it.
     const cps = fCols / SWEEP;
@@ -738,7 +783,7 @@
       const tc = t - age;
       let y0 = 0, y1 = 0, lo = Infinity, hi = -Infinity;
       for (let s = 0; s <= 4; s++) {
-        const y = base - ecgAt(tc + s / 4 / cps) * ECG_AMP;
+        const y = base - ecgLive(tc + s / 4 / cps) * ECG_AMP;
         if (s === 0) y0 = y;
         if (s === 4) y1 = y;
         if (y < lo) lo = y;
@@ -787,14 +832,17 @@
     const headCol = Math.floor(head);
     const bandTop = ecgRow - 6, bandBot = ecgRow + 3;
 
-    // Field: a slow drifting texture plus a ring for every heartbeat.
-    for (let col = 0; col < fCols; col++) sx[col] = Math.sin(col * 0.23 + t * 0.8);
-    for (let row = 0; row < fRows; row++) sy[row] = Math.sin(row * 0.37 - t * 0.6);
+    // Field: a slow drifting texture plus a ring for every heartbeat. The drift runs on its own clock,
+    // which stops while the eye is crashed, so the whole field freezes with it.
+    const td = still ? t : fieldT;
+    for (let col = 0; col < fCols; col++) sx[col] = Math.sin(col * 0.23 + td * 0.8);
+    for (let row = 0; row < fRows; row++) sy[row] = Math.sin(row * 0.37 - td * 0.6);
     const p = still ? 0 : pulse(t);
     const rings = [];
     if (!still) {
       const k = Math.floor(t / PERIOD);
       for (let b = k - 3; b <= k; b++) {
+        if (beatDead(b * PERIOD)) continue;
         for (const [off, amp] of [[0, 1], [DUB, 0.55]]) {
           const age = t - b * PERIOD - off;
           if (age >= 0 && age < RING_LIFE) rings.push(age * RING_SPEED, amp * Math.exp(-age) * fadeOut(age, RING_LIFE));
@@ -817,6 +865,9 @@
     }
     // Each SPAWN breathes on its own slow cycle: gone at the trough, ~60% dissolved in at the peak.
     const amb = spawnPhase.map(([per, ph]) => 0.05 + 0.15 * (0.5 + 0.5 * Math.sin((t / per) * Math.PI * 2 + ph)));
+    // ERROR replaces SPAWN cell by cell as the crash pulse passes, and gives way again as the recovery
+    // beat's pulse does. Two seconds covers the pulse crossing any screen.
+    const errAny = still ? sys !== 'ok' : t >= failAt && t < okAt + 2;
 
     let out = '';
     for (let row = 0; row < fRows; row++) {
@@ -831,8 +882,9 @@
         }
         // The chevrons light top to bottom so the cue reads as rolling down: four rolls once the eye is
         // awake, then they rest lit, so the cue never competes with the eye for good. Static when still.
+        // No scroll cue while scrolling is locked: it would promise something the page refuses.
         const k = cueK[i];
-        if (k !== -1 && !sceneBroken) {
+        if (k !== -1 && !sceneBroken && sys === 'ok') {
           if (k === -2) {
             rowChars[col] = ' ';
             continue;
@@ -843,8 +895,16 @@
             continue;
           }
         }
-        const sm = spawnMask[i];
         const d = dist[i];
+        let err = false;
+        if (errAny) {
+          if (still) err = true;
+          else {
+            const front = t - d / SHOCK_SPEED;
+            err = front >= failAt && front < okAt;
+          }
+        }
+        const sm = err ? errMask[i] : spawnMask[i];
         let wave = 0;
         for (let r = 0; r < rings.length; r += 2) {
           const z = (d - rings[r]) / RING_W;
@@ -857,7 +917,7 @@
         let v = ((0.07 + 0.055 * sx[col] * sy[row]) * (1 + 0.5 * p + flash) + dither[i] + wave) * m;
         if (sm > 0) {
           // Letters skip the vignette so the corners can still spell, and waves burn brighter through them.
-          let lit = sm * (amb[spawnId[i]] + 1.2 * wave);
+          let lit = sm * ((err ? errLit : amb[spawnId[i]]) + 1.2 * wave);
           // They glow from the moment a wave passes (the freshest wins); reduced motion fades them all at once.
           let glow = 0;
           for (const [age, strength] of shockAges) {
@@ -868,7 +928,7 @@
           // One colour can't fade, so the letters dissolve: each cell flips to a letter of the word
           // once it passes its own threshold, and drops back to texture below it.
           if (sm > 0.45 && lit * hole[i] > 0.08 + 0.2 * (dither[i] / 0.07 + 0.5)) {
-            rowChars[col] = WORD[(col + row * 2) % 5];
+            rowChars[col] = (err ? ERR_WORD : WORD)[(col + row * 2) % 5];
             continue;
           }
         }
@@ -893,7 +953,8 @@
     target.x = (dx / d) * s;
     target.y = (dy / d) * s;
     lastMove = performance.now() / 1000;
-    hint.classList.add('gone');
+    hintSeen = true;
+    if (sys === 'ok') hint.classList.add('gone'); // while crashed the hint is the reboot bar
   }
   addEventListener('pointermove', (e) => aim(e.clientX, e.clientY));
   addEventListener('pointerdown', (e) => aim(e.clientX, e.clientY));
@@ -907,9 +968,10 @@
   let introAt = Infinity, controlsIn = false, shocks = []; // { t: start s, s: strength }
 
   // Starts from the current lid position, so a click mid-blink retargets instead of jumping.
-  // A click closes with ease-out so the lid moves on the very next frame; idle blinks keep the softer in-out.
-  function startBlink(now, fromUser = false) {
-    blink = { start: now, from: closure, ease: fromUser ? easeOut : easeInOut, onShut: fromUser ? clickShut : idleShut };
+  // A click (which passes what happens behind the shut lid) closes with ease-out so the lid moves on the
+  // very next frame; idle blinks keep the softer in-out.
+  function startBlink(now, onShut) {
+    blink = { start: now, from: closure, ease: onShut ? easeOut : easeInOut, onShut: onShut || idleShut };
   }
   // The lid is down: every blink fires a pulse from behind it. Idle blinks come every few seconds,
   // so theirs is half strength with no flash; a click gets the full pulse and swaps the iris colour unseen.
@@ -934,11 +996,162 @@
     return 0;
   }
 
+  // ---------- overload ----------
+  // Blinking too fast crashes the eye. Each click adds heat that cools over a couple of seconds, so two or
+  // three clicks a second stay safe and a burst of six or seven does not. The strain shows before the
+  // crash: letters of the label corrupt and the iris trembles, and both heal as the heat cools.
+  // The crash lands behind the shut lid of the click that caused it: the eye opens dead (an X), SPAWN
+  // turns to ERROR as the pulse passes, the heart flatlines, the field freezes and scrolling locks.
+  // It reboots on its own, and the first heartbeat after the reboot brings everything back.
+  const HEAT_TAU = 1.5;  // s for the heat to cool to 1/e
+  const HEAT_WARN = 2.4; // first sign of strain
+  const HEAT_MAX = 4.5;  // crash
+  const DOWN = 2.4;      // s dead before the reboot starts
+  const BOOT = 1;        // s of reboot at least; it then waits for the next heartbeat
+  const NOISE = '#%*+=-:/\\|'; // corruption glyphs: nothing that needs escaping in HTML
+  const HOT_ORDER = [4, 1, 3]; // which letters of "blink" corrupt first
+  const hotGlyphs = ['', '', '', '', ''];
+  let heat = 0, heatAt = 0;
+  let sys = 'ok'; // 'ok' | 'down' (crashed) | 'boot' (rebooting); scrolling is locked unless 'ok'
+  let failAt = -Infinity, bootAt = -Infinity, okAt = -Infinity, denyAt = -Infinity;
+  let errLit = 1, fieldT = 0, labelKey = '', hintSeen = false, hintText = '';
+  const sysStatus = $('sysStatus');
+  const heatNow = (now) => heat * Math.exp(-(now - heatAt) / HEAT_TAU);
+  const beatDead = (tb) => tb >= failAt && tb < okAt - 1e-3; // beats that never happen while crashed
+
+  function crash() {
+    if (sys !== 'ok') return;
+    const now = performance.now() / 1000;
+    sys = 'down';
+    failAt = now;
+    bootAt = now + DOWN;
+    okAt = Math.ceil((bootAt + BOOT) / PERIOD) * PERIOD; // the reboot completes on a heartbeat
+    document.body.dataset.sys = 'down';
+    gazeX.x = gazeX.v = gazeY.x = gazeY.v = 0; // a dead stare, set while the lid hides the change
+    fireShock(1);
+    lockScroll(true);
+    btn.setAttribute('aria-disabled', 'true');
+    hintText = hint.textContent;
+    hint.classList.remove('gone');
+    sysStatus.textContent = 'System failure: too many blinks. Scrolling is locked while the eye reboots.';
+    muffle(true);
+    bgDirty = true;
+  }
+
+  function recover() {
+    sys = 'ok';
+    heat = 0;
+    delete document.body.dataset.sys;
+    // The beat's own pulse carries SPAWN back over ERROR, the eye opens on it, and the scroll cue rolls
+    // again to say scrolling is back.
+    shocks.push({ t: okAt, s: 1 });
+    introAt = okAt;
+    nextBlink = okAt + INTRO + 2;
+    lockScroll(false);
+    btn.removeAttribute('aria-disabled');
+    labelKey = '';
+    const restore = () => { if (sys === 'ok') hint.textContent = hintText; };
+    if (hintSeen) {
+      hint.classList.add('gone');
+      setTimeout(restore, 260); // after the fade, so the bar does not swap text while still visible
+    } else {
+      restore();
+    }
+    sysStatus.textContent = 'Back online.';
+    muffle(false);
+    bgDirty = true;
+  }
+
+  // Anything tried while crashed gets a "no": a short damped shake of the eye and a weak ripple through
+  // the frozen field. Throttled, because one flick of a wheel fires dozens of events.
+  function deny() {
+    const now = performance.now() / 1000;
+    if (now - denyAt < 0.45) return;
+    denyAt = now;
+    fireShock(0.35);
+  }
+
+  // Wheel, touch and keys are refused while crashed. The listeners only exist while locked, because a
+  // non-passive wheel listener makes every scroll wait on the main thread. Pinch-zoom stays available.
+  const SCROLL_KEYS = new Set(['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' ']);
+  const refuse = (e) => { e.preventDefault(); deny(); };
+  const onTouch = (e) => { if (e.touches.length === 1) refuse(e); };
+  const onKey = (e) => {
+    if (!SCROLL_KEYS.has(e.key) || (e.key === ' ' && e.target.closest && e.target.closest('button'))) return;
+    refuse(e);
+  };
+  function lockScroll(on) {
+    const m = on ? 'addEventListener' : 'removeEventListener';
+    window[m]('wheel', refuse, { passive: false });
+    window[m]('touchmove', onTouch, { passive: false });
+    window[m]('keydown', onKey);
+    document.documentElement.style.overflow = on ? 'hidden' : '';
+    if (on && scrollY > 0) scrollTo(0, 0); // back to the eye; the progress spring glides there
+  }
+
+  // Per frame: steps the crash through its phases and keeps the label, the reboot bar and ERROR in step.
+  function updateSys(now, still) {
+    if (sys === 'down' && now >= bootAt) {
+      sys = 'boot';
+      document.body.dataset.sys = 'boot';
+      bgDirty = true;
+    }
+    if (sys === 'boot' && now >= okAt) recover();
+
+    // ERROR is fully lit while crashed and dissolves through the reboot; what is left when the beat
+    // comes is what the recovery pulse sweeps away.
+    errLit = sys === 'down' ? 1 : sys === 'boot' ? 1 - 0.65 * seg(now, bootAt, okAt) : 0.35;
+
+    let key, html;
+    if (sys === 'ok') {
+      // The label is the heat gauge: up to three letters corrupt, right side first, and heal as it cools.
+      const h = heatNow(now);
+      const n = h < HEAT_WARN ? 0 : h < 3.2 ? 1 : h < 3.9 ? 2 : 3;
+      key = 'ok' + n;
+      if (key !== labelKey && !scrambling) {
+        // A letter keeps its glyph while it stays corrupted; only a newly corrupted one rolls a new glyph.
+        const chars = [...'blink'];
+        HOT_ORDER.forEach((i, k) => {
+          if (k >= n) hotGlyphs[i] = '';
+          else {
+            hotGlyphs[i] = hotGlyphs[i] || NOISE[(Math.random() * NOISE.length) | 0];
+            chars[i] = `<span class="hot">${hotGlyphs[i]}</span>`;
+          }
+        });
+        html = chars.join('');
+      }
+    } else if (sys === 'down') {
+      key = 'down';
+      html = '<span class="hot">error</span>';
+    } else {
+      // Rebooting: the label scrambles back into "blink", locking in left to right as the reboot runs.
+      const settled = Math.floor(seg(now, bootAt, okAt) * 5);
+      key = 'boot' + settled + (still ? '' : '.' + Math.floor(now / 0.045)); // ~22 swaps a second
+      if (key !== labelKey) {
+        let noise = '';
+        for (let i = settled; i < 5; i++) noise += NOISE[(Math.random() * NOISE.length) | 0];
+        html = 'blink'.slice(0, settled) + (noise && `<span class="hot">${noise}</span>`);
+      }
+    }
+    if (html !== undefined && key !== labelKey) {
+      labelKey = key;
+      label.innerHTML = html;
+    }
+
+    // The hint becomes a reboot bar that fills, linearly, over the whole lock.
+    if (sys !== 'ok') {
+      const n = Math.round(seg(now, failAt, okAt) * 10);
+      const text = `${sys === 'down' ? 'overload' : 'rebooting'} [${'#'.repeat(n)}${'.'.repeat(10 - n)}]`;
+      if (hint.textContent !== text) hint.textContent = text;
+    }
+  }
+
   // ---------- button ----------
   const GLYPHS = '#%&*+=-:/\\|<>';
   let scrambling = false;
   function scramble() {
-    if (scrambling || reduceMQ.matches) return;
+    // Not over a heat warning or a crash: the label is a gauge then, and the scramble would wipe it.
+    if (scrambling || reduceMQ.matches || labelKey !== 'ok0') return;
     scrambling = true;
     const word = 'blink';
     const start = performance.now();
@@ -953,12 +1166,25 @@
       }
       label.textContent = word.slice(0, settled) + noise.slice(settled);
       if (p < 1) requestAnimationFrame(tick);
-      else { label.textContent = word; scrambling = false; }
+      else {
+        label.textContent = word;
+        scrambling = false;
+        labelKey = ''; // heat may have risen meanwhile: let the gauge redraw
+      }
     };
     requestAnimationFrame(tick);
   }
 
-  btn.addEventListener('click', () => startBlink(performance.now() / 1000, true));
+  btn.addEventListener('click', () => {
+    const now = performance.now() / 1000;
+    if (sys !== 'ok') {
+      deny();
+      return;
+    }
+    heat = heatNow(now) + 1;
+    heatAt = now;
+    startBlink(now, heat >= HEAT_MAX ? crash : clickShut);
+  });
   btn.addEventListener('pointerenter', (e) => {
     if (e.pointerType !== 'mouse' || !fineMQ.matches) return;
     hovering = true;
@@ -975,7 +1201,8 @@
   // Log-spaced band edges in FFT bins (~190 Hz each): music lives low, so even steps would leave the
   // right half of the meter empty.
   const BANDS = [1, 2, 4, 7, 12, 20, 34, 58];
-  let audioCtx = null, analyser = null, gainNode = null, bins = null, playing = false, eqText = '';
+  let audioCtx = null, analyser = null, lowpass = null, gainNode = null, bins = null, playing = false, eqText = '';
+  const MUFFLED = 380; // Hz: a crash muffles the music like a power cut
 
   // Show the toggle only if the track is actually there.
   fetch(track.getAttribute('src'), { method: 'HEAD' })
@@ -990,10 +1217,24 @@
     analyser.smoothingTimeConstant = 0.8; // calmer bars: glyph flips every frame read as noise
     gainNode = audioCtx.createGain();
     gainNode.gain.value = 0;
-    source.connect(analyser);
+    lowpass = audioCtx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = sys === 'ok' ? 20000 : MUFFLED;
+    // The meter reads after the filter, so it shows what you hear: its high bands die in a crash too.
+    source.connect(lowpass);
+    lowpass.connect(analyser);
     analyser.connect(gainNode);
     gainNode.connect(audioCtx.destination);
     bins = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  // Exponential sweeps, because pitch is heard on a log scale. Fast down with the crash, slow back up.
+  function muffle(on) {
+    if (!lowpass) return;
+    const f = lowpass.frequency, t = audioCtx.currentTime;
+    f.cancelScheduledValues(t);
+    f.setValueAtTime(f.value, t);
+    f.exponentialRampToValueAtTime(on ? MUFFLED : 20000, t + (on ? 0.2 : 0.9));
   }
 
   async function toggleMusic() {
@@ -1378,8 +1619,11 @@
     const still = reduceMQ.matches;
     const scrollTarget = readScroll();
     const P0 = Math.min(1, Math.max(0, progress.x));
+    updateSys(now, still);
+    const alive = sys === 'ok'; // a crashed eye stares straight ahead: no tracking, saccades or dilation
+    if (alive) fieldT += dt;
 
-    if (!still && P0 === 0 && now - lastMove > 3.5 && now >= nextSaccade) {
+    if (!still && alive && P0 === 0 && now - lastMove > 3.5 && now >= nextSaccade) {
       const a = Math.random() * Math.PI * 2, m = Math.random() * 0.45;
       target.x = Math.cos(a) * m;
       target.y = Math.sin(a) * m * 0.7;
@@ -1399,9 +1643,9 @@
     // Fixed substeps keep the springs stable and on time when frames are slow.
     for (; dt > 0; dt -= 1 / 120) {
       const h = Math.min(dt, 1 / 120);
-      spring(gazeX, target.x * centre, 260, 26, h);
-      spring(gazeY, target.y * centre, 260, 26, h);
-      spring(dilate, hovering ? 1 : 0, 180, 22, h);
+      spring(gazeX, alive ? target.x * centre : 0, 260, 26, h);
+      spring(gazeY, alive ? target.y * centre : 0, 260, 26, h);
+      spring(dilate, hovering && alive ? 1 : 0, 180, 22, h);
       // Scroll runs through a critically damped spring: wheel steps become one glide, with no overshoot.
       // Reduced motion only drives fades, so it gets a ~200ms ease-out lag instead: no momentum, but no
       // full-screen hard cut on every wheel tick either.
@@ -1420,11 +1664,15 @@
     }
     const P = Math.min(1, Math.max(0, progress.x));
 
-    if (!still && !blink && now >= nextBlink && P === 0) {
+    if (!still && alive && !blink && now >= nextBlink && P === 0) {
       startBlink(now);
       nextBlink = now + (Math.random() < 0.18 ? 0.42 : 2.4 + Math.random() * 3.6);
     }
     closure = blinkAt(now);
+    // Crashed, the upper lid droops a little; rebooting, the eye closes (an on-screen move, so in-out)
+    // and stays shut until the beat reopens it through the intro below.
+    if (sys === 'down') closure = Math.max(closure, 0.2);
+    else if (sys === 'boot') closure = still ? 1 : Math.max(closure, easeInOut(seg(now, bootAt, bootAt + 0.4)));
     if (now < introAt + INTRO) {
       const opening = still ? 0 : 1 - easeOut(Math.max(0, now - introAt) / INTRO);
       closure = Math.max(closure, opening);
@@ -1436,8 +1684,34 @@
     }
     updateEq(still);
 
-    const ix = gazeX.x * MAX_X, iy = gazeY.x * MAX_Y;
+    let ix = gazeX.x * MAX_X, iy = gazeY.x * MAX_Y;
     const pupil = PR + 0.8 * dilate.x;
+    // Strain before a crash: the iris trembles in jumps (about 16 a second; one every frame reads as noise),
+    // up to about a cell, settling as the heat cools.
+    const strain = alive && !still ? Math.max(0, (heatNow(now) - HEAT_WARN) / (HEAT_MAX - HEAT_WARN)) : 0;
+    if (strain > 0) {
+      const k = Math.floor(now * 16);
+      ix += strain * 1.2 * (hash(k, 1) - 0.5);
+      iy += strain * 0.7 * (hash(k, 2) - 0.5);
+    }
+    const dead = !alive;
+    // The crash tears the eye: rows jump sideways by up to three cells, re-rolled at 30fps and dying out
+    // over 0.4s while the lid opens on the X. Reduced motion skips it.
+    let tear = null, tearKey = '';
+    const ta = now - failAt;
+    if (!still && ta >= 0 && ta < 0.4) {
+      const k = Math.floor(now * 30);
+      tear = new Int8Array(ROWS);
+      for (let r = 0; r < ROWS; r++) {
+        if (hash(r, k) > 0.55) tear[r] = Math.round((hash(r + 50, k) - 0.5) * 6 * (1 - ta / 0.4));
+      }
+      tearKey = 't' + k;
+    }
+    // A refused scroll or click shakes the eye: a damped wobble, ~3 swings in 0.4s. Reduced motion skips it.
+    const da = now - denyAt;
+    const shake = !still && da < 0.4 ? 7 * Math.exp(-da / 0.1) * Math.sin(da * Math.PI * 16) : 0;
+    const shakeTf = Math.abs(shake) > 0.05 ? `translateX(${shake.toFixed(2)}px)` : '';
+    if (eyeEl.style.transform !== shakeTf) eyeEl.style.transform = shakeTf;
 
     // Everything around the eye falls away first; exits ease out, so the first scrolled pixel already answers.
     setOpacity(controlsWrap, 1 - easeOut(seg(P, 0, 0.05)));
@@ -1454,10 +1728,10 @@
     if (P === 0) {
       show(eyeEl, true);
       show(diveEl, false);
-      const key = [ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join();
+      const key = [ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join() + (dead ? 'x' : '') + tearKey;
       if (key !== lastEyeKey) {
         lastEyeKey = key;
-        renderEye(eyeEl, COLS, ROWS, CX, CY, 1, ix, iy, closure, pupil, gazeY.x);
+        renderEye(eyeEl, COLS, ROWS, CX, CY, 1, ix, iy, closure, pupil, gazeY.x, dead, tear);
       }
     } else if (eyeAlpha > 0) {
       // The dive: an exponential zoom reads as a steady fall; the pupil drifts to the screen centre.
@@ -1468,10 +1742,10 @@
       const cx = dive.cx + (dive.sx - dive.cx) * pan, cy = dive.cy + (dive.sy - dive.cy) * pan;
       show(eyeEl, false);
       show(diveEl, true);
-      const key = 'd' + [zoom, cx, cy, ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join();
+      const key = 'd' + [zoom, cx, cy, ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join() + (dead ? 'x' : '');
       if (key !== lastEyeKey) {
         lastEyeKey = key;
-        renderEye(diveEl, dive.cols, dive.rows, cx, cy, zoom, ix, iy, closure, pupil, gazeY.x);
+        renderEye(diveEl, dive.cols, dive.rows, cx, cy, zoom, ix, iy, closure, pupil, gazeY.x, dead);
       }
       const glow = 1 - seg(P, 0, 0.12);
       diveEl.style.setProperty('--glow', glow);
