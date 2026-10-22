@@ -18,6 +18,18 @@ window.AsciiParts = window.AsciiParts || {};
 | `parts/ascii-canvas.js` | `createAsciiRenderer` |
 | `parts/scene-room.js` | `drawRoom`, `drawPerson`, `personAnchor` |
 | `parts/scene-ufo.js` | `drawUfo`, `drawBeam`, `ufoAnchor` |
+| `parts/scene-shatter.js` | `drawShatter` |
+
+```js
+// The screen as glass (the fourth wall): drawn last, in front of everything, without the room camera.
+AsciiParts.drawShatter(ctx, w, h, {
+  x, y,          // CSS px impact point
+  crack,         // 0..1 how far the crack web has spread from the impact
+  hit,           // 0..1 optional flare at the impact while a knock lands
+  burst,         // 0..1 the pane blowing inward in tumbling shards (0 = still whole)
+  reduced,       // no flying shards: the cracked pane fades instead
+})
+```
 
 The final page inlines these files into one `<script>`, so keep each file self-contained, wrap private
 helpers in an IIFE, and do not depend on any other file except through `window.AsciiParts`.

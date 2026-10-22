@@ -16,14 +16,11 @@
   // ---------- palette (source colours; the renderer maps them to glyphs) ----------
   const WALL = [8, 5, 15]; // safely below the first glyph, so unlit wall stays empty
   const SPILL = [150, 118, 232];
-  const GLASS_TOP = [246, 241, 255];
-  const GLASS_BOT = [222, 210, 250];
-  const WHITE = [255, 255, 255];
-  const SHEER = [128, 110, 186];
-  const MULLION = [44, 28, 88];
+  const SCONCE = [236, 214, 255]; // the brightest thing in the room, still purple: white is for alien light
   const FOLD_SHADE = [70, 44, 140];
-  const DRAPE_DARK = [10, 6, 20];
-  const DRAPE_LIT = [112, 86, 182];
+  const RAIL = [92, 72, 150];
+  const WAINSCOT = [26, 18, 46];
+  const PANEL_LINE = [12, 8, 22];
   const BED_TOP = [44, 32, 74];
   const BED_LIT = [196, 176, 255];
   const BED_FRONT = [24, 16, 40];
@@ -36,8 +33,8 @@
   function layout(w, h) {
     const portrait = 1 - smoothstep(0.6, 1, w / h);
     const len = Math.min(0.62 * h, w * lerp(0.5, 0.8, portrait));
-    // Every limb has to stay in front of the glass to read as a backlit cut-out, so the window
-    // never gets narrower than the body.
+    // The lit stretch of wall behind the bed: every limb should stay in front of it to read as a
+    // cut-out, so it never gets narrower than the body.
     const winW = Math.min(0.9 * w, Math.max(0.42 * w, 1.12 * len));
     return {
       len,
@@ -70,34 +67,11 @@
     return g;
   }
 
-  function drapePath(ctx, side, L, w, h) {
-    const { winX, winY, winW, bedY } = L;
-    const cw = Math.max(0.15 * w, 0.07 * h);
-    const edge = side < 0 ? winX : winX + winW;
-    const top = winY - 0.035 * h;
-    const bottom = bedY + 0.06 * h;
-    const H = bottom - top;
-    const tieY = top + 0.64 * H;
-    // x measured inward (toward the window) from the window edge
-    const X = (d) => edge - side * d;
-    const outer = X(-cw);
-    const innerTop = X(0.1 * cw);
-    const tie = X(-0.32 * cw);
-    const foot = X(-0.04 * cw);
-    ctx.beginPath();
-    ctx.moveTo(outer, top);
-    ctx.lineTo(innerTop, top);
-    ctx.bezierCurveTo(innerTop, top + 0.32 * H, X(-0.22 * cw), tieY - 0.1 * H, tie, tieY);
-    ctx.bezierCurveTo(X(-0.36 * cw), tieY + 0.08 * H, foot, bottom - 0.12 * H, foot, bottom);
-    ctx.lineTo(outer, bottom);
-    ctx.closePath();
-    return { outer, inner: innerTop, cw, top, bottom, tieY };
-  }
-
   function drawRoom(ctx, w, h, opts = {}) {
-    const { t = 0, reduced = false, glow = 0 } = opts;
+    const { glow = 0 } = opts; // the room is static, so t and reduced have nothing to drive here
     const gl = clamp01(glow);
     const L = layout(w, h);
+    // The old window box is now just the lit area of wall behind the bed.
     const { winX, winY, winW, winH, bedY } = L;
     const cx = winX + winW / 2;
     const cy = winY + winH * 0.45;
@@ -108,82 +82,55 @@
     ctx.fillStyle = rgba(WALL, 1);
     ctx.fillRect(-w, -h, 3 * w, 3 * h);
 
-    // Window light spilling onto the wall, stretched to the window's tall shape.
-    const reach = Math.max(winW, winH) * (0.75 + 0.5 * gl);
+    // A soft lamp wash on the wall behind the bed: the backdrop the dark body reads against.
+    const reach = Math.max(0.62 * w, 0.75 * h) * (1 + 0.3 * gl);
     ctx.save();
     ctx.translate(cx, cy);
-    ctx.scale(Math.max(0.75, winW / winH) * 1.15, 1);
-    const spill = ctx.createRadialGradient(0, 0, reach * 0.25, 0, 0, reach);
-    spill.addColorStop(0, rgba(SPILL, (0.36 + 0.44 * gl).toFixed(3)));
-    spill.addColorStop(0.45, rgba(SPILL, (0.13 + 0.27 * gl).toFixed(3)));
-    spill.addColorStop(0.75, rgba(SPILL, (0.04 + 0.1 * gl).toFixed(3)));
-    spill.addColorStop(1, rgba(SPILL, 0));
-    ctx.fillStyle = spill;
+    ctx.scale(1.25, 1);
+    const wash = ctx.createRadialGradient(0, 0, reach * 0.1, 0, 0, reach);
+    wash.addColorStop(0, rgba(SPILL, (0.62 + 0.3 * gl).toFixed(3)));
+    wash.addColorStop(0.45, rgba(SPILL, (0.34 + 0.25 * gl).toFixed(3)));
+    wash.addColorStop(0.8, rgba(SPILL, (0.08 + 0.08 * gl).toFixed(3)));
+    wash.addColorStop(1, rgba(SPILL, 0));
+    ctx.fillStyle = wash;
     ctx.fillRect(-2 * reach, -2 * reach, 4 * reach, 4 * reach);
     ctx.restore();
 
-    // Sheer curtain hanging from the rod to the bed; lit from behind, so it glows where the glass is.
-    const sheerPad = 0.06 * winW;
-    const sx0 = winX - sheerPad;
-    const sx1 = winX + winW + sheerPad;
-    const sy0 = winY - 0.03 * h;
-    const sy1 = bedY + 0.04 * h;
-    ctx.fillStyle = mix(SHEER, WHITE, 0.25 * gl);
-    ctx.fillRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
+    // Wallpaper stripes above the chair rail, several cells wide so they survive one sample per cell.
+    const railY = winY + winH * 0.78;
+    const period = Math.max(54, w / 14);
+    ctx.fillStyle = foldGradient(ctx, -w, 2 * w, period, 0, FOLD_SHADE, 0.3);
+    ctx.fillRect(-w, -h, 3 * w, railY + h);
 
-    // Glass: the brightest area in the room. Glow pushes it to pure white.
-    const glass = ctx.createLinearGradient(0, winY, 0, winY + winH);
-    glass.addColorStop(0, mix(GLASS_TOP, WHITE, gl));
-    glass.addColorStop(0.55, mix(GLASS_TOP, WHITE, 0.4 + 0.6 * gl));
-    glass.addColorStop(1, mix(GLASS_BOT, WHITE, gl));
-    ctx.fillStyle = glass;
-    ctx.fillRect(winX, winY, winW, winH);
-
-    // Mullions and frame: about one cell thick, in a mid tone so the black body still owns the darkest
-    // value against the window.
-    const mw = Math.max(9, 0.012 * w);
-    const mh = Math.max(13, 0.018 * h);
-    ctx.fillStyle = rgba(MULLION, (0.62 - 0.4 * gl).toFixed(3));
-    for (const f of [1 / 3, 2 / 3]) ctx.fillRect(winX + winW * f - mw / 2, winY, mw, winH);
-    // Transoms sit above and below the body so the hands and head stay against clear glass.
-    for (const f of [0.3, 0.9]) ctx.fillRect(winX, winY + winH * f - mh / 2, winW, mh);
-    ctx.fillRect(winX - mw, winY - mh, winW + 2 * mw, mh);
-    ctx.fillRect(winX - mw, winY + winH, winW + 2 * mw, mh);
-    ctx.fillRect(winX - mw, winY, mw, winH);
-    ctx.fillRect(winX + winW, winY, mw, winH);
-
-    // Sheer folds over everything inside the curtain. A breeze drifts them a fraction of a fold.
-    const period = Math.max(5 * mw, winW / 9);
-    const drift = reduced ? 0 : (0.2 * Math.sin(t * 0.31) + 0.08 * Math.sin(t * 0.53 + 1.3)) * period;
-    ctx.fillStyle = foldGradient(ctx, sx0, sx1, period, drift, FOLD_SHADE, 0.24 - 0.12 * gl);
-    ctx.fillRect(sx0, sy0, sx1 - sx0, sy1 - sy0);
-
-    // Heavy curtains with vertical folds, catching light on the edge nearest the window.
-    for (const side of [-1, 1]) {
-      const d = drapePath(ctx, side, L, w, h);
+    // Two sconces throwing scallops of light up and down the wall, a classic bedroom read.
+    for (const sx of [0.16 * w, 0.84 * w]) {
+      const sy = winY + winH * 0.32;
+      const lamp = Math.max(0.22 * h, 0.12 * w);
       ctx.save();
-      ctx.clip();
-      const x0 = Math.min(d.outer, d.inner);
-      const x1 = Math.max(d.outer, d.inner);
-      ctx.fillStyle = rgba(DRAPE_DARK, 1);
-      ctx.fillRect(x0 - d.cw, d.top, x1 - x0 + 2 * d.cw, d.bottom - d.top);
-      ctx.fillStyle = foldGradient(ctx, x0, x1, d.cw / 3.2, side * d.cw * 0.13, DRAPE_LIT, 1);
-      ctx.fillRect(x0 - d.cw, d.top, x1 - x0 + 2 * d.cw, d.bottom - d.top);
-      const lit = ctx.createLinearGradient(d.inner, 0, d.outer, 0);
-      lit.addColorStop(0, rgba(SPILL, (0.32 + 0.3 * gl).toFixed(3)));
-      lit.addColorStop(0.55, rgba(SPILL, (0.06 + 0.1 * gl).toFixed(3)));
-      lit.addColorStop(1, rgba(SPILL, 0));
-      ctx.fillStyle = lit;
-      ctx.fillRect(x0 - d.cw, d.top, x1 - x0 + 2 * d.cw, d.bottom - d.top);
-      // Shade below the tie-back where the fabric bunches.
-      const bunch = ctx.createLinearGradient(0, d.tieY - 0.04 * h, 0, d.tieY + 0.05 * h);
-      bunch.addColorStop(0, rgba(WALL, 0));
-      bunch.addColorStop(0.5, rgba(WALL, 0.55));
-      bunch.addColorStop(1, rgba(WALL, 0));
-      ctx.fillStyle = bunch;
-      ctx.fillRect(x0 - d.cw, d.top, x1 - x0 + 2 * d.cw, d.bottom - d.top);
+      ctx.translate(sx, sy);
+      ctx.scale(0.42, 1);
+      const scallop = ctx.createRadialGradient(0, 0, 0, 0, 0, lamp);
+      scallop.addColorStop(0, rgba(SCONCE, 0.85));
+      scallop.addColorStop(0.35, rgba(SPILL, 0.42));
+      scallop.addColorStop(1, rgba(SPILL, 0));
+      ctx.fillStyle = scallop;
+      ctx.fillRect(-lamp, -lamp, 2 * lamp, 2 * lamp);
       ctx.restore();
+      // The fixture: a small bright shade, a cell or two so it lands as a point of light.
+      const fw = Math.max(16, 0.018 * w), fh = Math.max(14, 0.03 * h);
+      ctx.fillStyle = rgba(SCONCE, 1);
+      ctx.fillRect(sx - fw / 2, sy - fh / 2, fw, fh);
     }
+
+    // Chair rail and a darker panelled wainscot below it.
+    const rh = Math.max(12, 0.016 * h);
+    ctx.fillStyle = rgba(WAINSCOT, 1);
+    ctx.fillRect(-w, railY, 3 * w, bedY - railY + 0.1 * h);
+    ctx.fillStyle = rgba(RAIL, 1);
+    ctx.fillRect(-w, railY - rh / 2, 3 * w, rh);
+    const panel = Math.max(90, w / 7);
+    ctx.fillStyle = rgba(PANEL_LINE, 1);
+    for (let x = (w / 2) % panel; x < w; x += panel) ctx.fillRect(x - 4, railY + rh, 8, bedY - railY);
 
     // Bed across the bottom: a lit top surface in slight perspective over a dark front face.
     const bx0 = 0.03 * w;

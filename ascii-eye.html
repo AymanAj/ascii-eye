@@ -190,6 +190,30 @@
   }
   .hint.gone { opacity: 0; }
 
+  /* Scroll cue: an ASCII mouse whose wheel stroke rolls down and fades. A looping hint, seen once per
+     visit, so a keyframe is fine; ease-out because each roll is the stroke leaving. */
+  .mouse {
+    margin: 4px 0 0;
+    font: 11px/1 var(--mono);
+    color: var(--muted);
+    user-select: none;
+  }
+  /* A few rolls once the eye has woken up, then it rests: the cue should not compete with the eye forever. */
+  .mouse .wheel {
+    display: inline-block;
+    color: var(--text);
+    animation: wheel 1.6s var(--ease-out) 1.2s 4 both;
+  }
+  /* The stroke fades in at the top before each roll instead of popping back at full strength. */
+  @keyframes wheel {
+    0% { transform: translateY(0); opacity: 0; }
+    12% { transform: translateY(0); opacity: 1; }
+    70%, 100% { transform: translateY(0.9em); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mouse .wheel { animation: none; opacity: 1; }
+  }
+
   .sr-only {
     position: absolute;
     width: 1px;
@@ -217,7 +241,10 @@
       <div class="controls" id="controls">
         <button class="btn" id="blink" type="button" aria-label="Blink">[ <span id="label">blink</span> ]</button>
         <p class="hint" id="hint">move your cursor</p>
-        <p class="hint" id="scrollCue">scroll &darr;</p>
+        <pre class="mouse" id="scrollCue" aria-hidden="true"> .---.
+ | <span class="wheel">|</span> |
+ |   |
+ '---'</pre>
       </div>
     </div>
     <!-- Outside #controlsWrap, which goes inert while diving: the story stays reachable at any scroll. -->
@@ -232,6 +259,7 @@
   <script src="parts/ascii-canvas.js"></script>
   <script src="parts/scene-room.js"></script>
   <script src="parts/scene-ufo.js"></script>
+  <script src="parts/scene-shatter.js"></script>
 
 <script>
 (() => {
@@ -882,8 +910,9 @@
   //   0    - 0.30  dive: zoom through the pupil while the controls, glow and background fall away
   //   0.26 - 0.50  the room shows through the pupil and keeps approaching (it grows into place)
   //   0.30 - 0.58  the person hovers just above the bed and drifts up a little
-  //   0.36 - 0.52  the room's light dies, so the ship arrives into the dark
-  //   0.40 - 0.60  the ship enters from the right edge and glides into its hover spot
+  //   0.37 - 0.44  three knocks from outside crack the screen itself, the fourth wall
+  //   0.40 - 0.54  the lamps die as the glass gives, so the ship arrives into the dark
+  //   0.44 - 0.60  the pane blows inward in tumbling shards; the ship bursts through and recedes to its spot
   //   0.60 - 0.72  the beam strikes as a line, then the cone opens
   //   0.64 - 0.88  the beam draws the person up
   //   0.74 - 0.92  taken in: the body rises into the hull and dissolves into the light
@@ -894,9 +923,6 @@
   const shipBank = { x: 0, v: 0 };
   let scene = null, sceneFs = 0, sceneBroken = false;
   let storyP = NaN; // reduced motion: the P the static scene was last drawn at; NaN forces a redraw
-  // A gentle ease-out for the ship's entrance: scroll scrubs it, and the strong UI curve would whip it in
-  // faster than the scroll that drives it. This one starts under 2x average speed and glides to a stop.
-  const easeGlide = cubicBezier(0.25, 0.46, 0.45, 0.94);
 
   // The track scales with the viewport but scroll positions are pixels: when the track itself changes
   // height (rotation, window resize), put the reader back at the same point of the story. A mobile URL
@@ -955,16 +981,20 @@
     }
   }
 
-  // Where the ship is at progress P: just past the right edge at 0.40, parked at its hover spot by 0.60.
+  // Where the knocks land on the screen: beside the hover spot, so the ship has a short way to recede.
+  const impactAt = (w, h, ua) => ({ x: ua.x + 0.1 * w, y: ua.y + 0.12 * h });
+
+  // Where the ship is at progress P: it comes from our side of the screen, so it bursts through the
+  // impact point close to us (big) and recedes into the room to its hover spot by 0.60. That is an
+  // entrance with an impact, so a strong ease-out: fast through the glass, then a long settle.
   function shipAt(P, w, h, ua, still) {
     if (still) return { x: ua.x, y: ua.y, size: ua.size, f: 1 };
-    const f = easeGlide(seg(P, 0.4, 0.6));
-    // At f = 0 the drawn half-width is 0.72 * size, so this keeps the rim just out of view until 0.40.
-    const x0 = w + ua.size * 0.8, y0 = ua.y - h * 0.08;
+    const f = easeOut(seg(P, 0.44, 0.6));
+    const i = impactAt(w, h, ua);
     return {
-      x: x0 + (ua.x - x0) * f,
-      y: y0 + (ua.y - y0) * f + Math.sin(Math.PI * f) * h * 0.05, // dips on the way in, then settles
-      size: ua.size * (0.72 + 0.28 * f), // grows a little as it approaches
+      x: i.x + (ua.x - i.x) * f,
+      y: i.y + (ua.y - i.y) * f,
+      size: ua.size * (2.4 - 1.4 * f),
       f,
     };
   }
@@ -983,9 +1013,9 @@
     ctx.scale(cam, cam);
     ctx.translate(-w / 2, -h / 2);
 
-    // The room's light dies before the ship crosses the window, all the way to black: any glow left in
-    // the glass competes with the alien light. Brightness change, so a gentle in-out.
-    const dark = smoothstep(0.36, 0.52, P);
+    // The lamps die as the glass gives, all the way to black, so the alien light is the only light.
+    // Brightness change, so a gentle in-out.
+    const dark = smoothstep(0.4, 0.54, P);
     if (dark < 1) {
       AsciiParts.drawRoom(ctx, w, h, { t: now, reduced: still, glow: 0 });
       if (dark > 0) {
@@ -1063,21 +1093,38 @@
       );
     }
 
-    if (still ? P > 0.4 : ship.f > 0) {
-      ctx.globalAlpha = still ? seg(P, 0.4, 0.55) : 1; // reduced motion: the ship fades in where it hovers
+    if (still ? P > 0.44 : ship.f > 0) {
+      ctx.globalAlpha = still ? seg(P, 0.44, 0.56) : 1; // reduced motion: the ship fades in where it hovers
       AsciiParts.drawUfo(ctx, w, h, {
         x: ship.x,
         y: ship.y + shipBob,
         size: ship.size,
         bank: shipBank.x,
         lights: seg(P, 0.42, 0.5),
-        keyline: 1 - dark, // a dark edge while it crosses the lit window, gone once the room is dark
+        keyline: 1 - dark, // a dark edge while it crosses the lit wall, gone once the room is dark
         t: now,
         reduced: still,
       });
       ctx.globalAlpha = 1;
     }
     ctx.restore();
+
+    // The screen itself is the glass: three knocks from outside spread the cracks, then the pane blows
+    // inward as the ship comes through. Drawn last and outside the room camera, because it is our side.
+    if (AsciiParts.drawShatter) {
+      const knock = (a, b) => smoothstep(a, b, P);
+      const i = impactAt(w, h, ua);
+      AsciiParts.drawShatter(ctx, w, h, {
+        x: i.x,
+        y: i.y,
+        // The knocks build: a small star, a wider web, then the whole pane.
+        crack: 0.1 * knock(0.37, 0.385) + 0.22 * knock(0.405, 0.42) + 0.68 * knock(0.43, 0.44),
+        // Each knock flares at the impact while the scroll passes it, so the hits read as hits.
+        hit: Math.max(...[0.3775, 0.4125, 0.435].map((c) => 1 - smoothstep(0, 0.012, Math.abs(P - c)))),
+        burst: seg(P, 0.44, 0.6),
+        reduced: still,
+      });
+    }
 
     // The word from the background surfaces in the light as a dark cut-out: at least about 10 rows of cap
     // height so it reads on a phone, squeezed horizontally rather than overflowing.
@@ -1125,7 +1172,7 @@
     const centre = 1 - seg(P0, 0, 0.06);
     // The ship banks into its flight in proportion to how fast scrolling carries it across the screen.
     let bankTarget = 0;
-    if (!still && scene && P0 > 0.38 && P0 < 0.64) {
+    if (!still && scene && P0 > 0.42 && P0 < 0.64) {
       const { w: vw, h: vh } = viewport();
       const ua = AsciiParts.ufoAnchor(vw, vh);
       const dxdP = (shipAt(P0 + 0.002, vw, vh, ua, false).x - shipAt(P0 - 0.002, vw, vh, ua, false).x) / 0.004;
