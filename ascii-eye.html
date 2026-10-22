@@ -194,30 +194,6 @@
   }
   .hint.gone { opacity: 0; }
 
-  /* Scroll cue: an ASCII mouse whose wheel stroke rolls down and fades. A looping hint, seen once per
-     visit, so a keyframe is fine; ease-out because each roll is the stroke leaving. */
-  .mouse {
-    margin: 4px 0 0;
-    font: 11px/1 var(--mono);
-    color: var(--muted);
-    user-select: none;
-  }
-  /* A few rolls once the eye has woken up, then it rests: the cue should not compete with the eye forever. */
-  .mouse .wheel {
-    display: inline-block;
-    color: var(--text);
-    animation: wheel 1.6s var(--ease-out) 1.2s 4 both;
-  }
-  /* The stroke fades in at the top before each roll instead of popping back at full strength. */
-  @keyframes wheel {
-    0% { transform: translateY(0); opacity: 0; }
-    12% { transform: translateY(0); opacity: 1; }
-    70%, 100% { transform: translateY(0.9em); opacity: 0; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .mouse .wheel { animation: none; opacity: 1; }
-  }
-
   .sr-only {
     position: absolute;
     width: 1px;
@@ -245,10 +221,6 @@
       <div class="controls" id="controls">
         <button class="btn" id="blink" type="button" aria-label="Blink">[ <span id="label">blink</span> ]</button>
         <p class="hint" id="hint">move your cursor</p>
-        <pre class="mouse" id="scrollCue" aria-hidden="true"> .---.
- | <span class="wheel">|</span> |
- |   |
- '---'</pre>
       </div>
     </div>
     <!-- Outside #controlsWrap, which goes inert while diving: the story stays reachable at any scroll. -->
@@ -563,6 +535,7 @@
   let fCols = 0, fRows = 0, cw = 8.4, ch = 14, ecgRow = 0;
   let eye = { cx: 0, cy: 0 };
   let dive = { cols: 0, rows: 0, cx: 0, cy: 0, sx: 0, sy: 0 };
+  let cueCh, cueK; // the scroll chevron, drawn with the field's own glyphs
   let dist, mask, hole, dither, ecgOk, occ, ecgCh, sx, sy, rowChars;
   let needsLayout = true, bgDirty = true, lastField = -Infinity;
 
@@ -665,6 +638,30 @@
       }
     }
     buildSpawn(w, h);
+    // Scroll cue: two nested chevrons at the bottom centre, part of the ASCII art rather than a widget
+    // on top of it.  \   /
+    //                  \ /   <- the second chevron starts on the first one's tip row
+    //                 \ v /
+    //                  \ /
+    //                   v
+    cueCh = new Uint16Array(n);
+    cueK = new Int8Array(n).fill(-1);
+    const cc = Math.round(fCols / 2), top0 = fRows - 8;
+    for (let k = 0; k < 2; k++) {
+      const a = top0 + 2 * k;
+      const put = (r, c, chr) => {
+        if (r < 0 || r >= fRows || c < 0 || c >= fCols) return;
+        const i = r * fCols + c;
+        if (mask[i] === 0) return; // never inside the controls' clearing
+        cueCh[i] = chr.charCodeAt(0);
+        cueK[i] = k;
+      };
+      put(a, cc - 2, '\\');
+      put(a, cc + 2, '/');
+      put(a + 1, cc - 1, '\\');
+      put(a + 1, cc + 1, '/');
+      put(a + 2, cc, 'v');
+    }
     storyP = NaN;
     bgDirty = true;
     lastField = -Infinity;
@@ -781,6 +778,15 @@
         if (occ[i] || m === 0 || nearHead) {
           rowChars[col] = ' ';
           continue;
+        }
+        // The chevrons light top to bottom, then rest, so the cue reads as rolling down; static when still.
+        const k = cueK[i];
+        if (k >= 0 && !sceneBroken) {
+          const phase = (t / 1.8) % 1;
+          if (still || (phase >= 0.12 + 0.2 * k && phase < 0.8)) {
+            rowChars[col] = String.fromCharCode(cueCh[i]);
+            continue;
+          }
         }
         const sm = spawnMask[i];
         const d = dist[i];
@@ -952,8 +958,7 @@
     sceneBroken = true;
     scene = null;
     show(sceneEl, false);
-    trackEl.style.display = 'none';
-    $('scrollCue').hidden = true;
+    trackEl.style.display = 'none'; // the field stops drawing the scroll chevron once sceneBroken is set
   }
 
   function sceneLayout(w, h) {
