@@ -1,0 +1,1274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASCII Eye</title>
+<script>document.documentElement.classList.add('js');</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0714;
+    --text: #eadfff;
+    --muted: rgba(214, 196, 255, 0.62); /* 5.2:1 on the page at 12px; still clearly secondary */
+
+    --field: rgba(160, 108, 255, 0.34);
+    --ecg-head: #ffffff;
+    --ecg-hot: #e6d4ff;
+    --ecg-mid: rgba(190, 142, 255, 0.78);
+    --ecg-dim: rgba(150, 100, 235, 0.36);
+
+    --lid: #dcc2ff;
+    --lash: #b384ff;
+    --sclera: rgba(228, 214, 255, 0.55);
+    --shade: rgba(168, 126, 255, 0.4);
+    --iris: #9a5bff;
+    --iris-hi: #c8a0ff;
+    --lime: #a3e635;
+    --lime-hi: #d9f99d;
+    --glint: #ffffff;
+
+    --btn-bg: #150c25;
+    --btn-bg-hover: #22133d;
+    --btn-line: rgba(178, 128, 255, 0.35);
+    --btn-line-hover: rgba(204, 166, 255, 0.8);
+
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-variant-ligatures: none; /* keep "==" and "->" as separate cells */
+    overflow-x: hidden;
+    touch-action: manipulation; /* no double-tap zoom, so taps aim the eye at once; panning and pinch-zoom stay */
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* The only in-flow element: its height is the length of the scroll story. */
+  .track { height: 600vh; height: 600lvh; }
+
+  /* Both background layers share one character grid so their rows line up. */
+  .layer {
+    position: fixed;
+    inset: 0;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 1;
+    white-space: pre;
+    overflow: hidden;
+    contain: strict; /* redrawing thousands of glyphs must not relayout the page */
+    pointer-events: none;
+    user-select: none;
+  }
+  #field { color: var(--field); }
+  #ecg .h { color: var(--ecg-head); }
+  #ecg .a { color: var(--ecg-hot); }
+  #ecg .b { color: var(--ecg-mid); }
+  #ecg .c { color: var(--ecg-dim); }
+
+  .stage {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 16px;
+  }
+
+  .eye {
+    margin: 0;
+    font-family: var(--mono);
+    line-height: 1;
+    white-space: pre;
+    color: var(--sclera);
+    user-select: none;
+  }
+  /* Glow only the strokes that read as light (the sclera dots are most of the glyphs and gain nothing),
+     and let it follow each span's colour so a lime iris glows lime. */
+  .eye .l, .eye .h, .eye .i, .eye .j {
+    text-shadow: 0 0 10px color-mix(in srgb, currentColor 45%, transparent);
+  }
+  .eye .l { color: var(--lid); }
+  .eye .h { color: var(--lash); }
+  .eye .s { color: var(--sclera); }
+  .eye .d { color: var(--shade); }
+  .eye .i { color: var(--iris); }
+  .eye .j { color: var(--iris-hi); }
+  /* A clicked blink swaps the iris colour while the lid is shut, so the change is never seen happening. */
+  [data-iris="lime"] .eye .i { color: var(--lime); }
+  [data-iris="lime"] .eye .j { color: var(--lime-hi); }
+  .eye .g { color: var(--glint); text-shadow: 0 0 8px #fff; }
+
+  /* Scrolling hands the eye to a full-screen grid aligned cell for cell, so it can zoom past its box.
+     It sits above the scene canvas: the pupil is empty cells, so the room shows through it as you fall
+     in, and the iris fades over the room instead of being cut off by it. */
+  .dive {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 3;
+    pointer-events: none;
+    visibility: hidden;
+  }
+  /* Glow fades out early in the dive; once it is invisible it is dropped so the zoomed glyphs paint cheaply. */
+  .dive .l, .dive .h, .dive .i, .dive .j {
+    text-shadow: 0 0 10px color-mix(in srgb, currentColor calc(var(--glow, 1) * 45%), transparent);
+  }
+  .dive.noglow .l, .dive.noglow .h, .dive.noglow .i, .dive.noglow .j,
+  .dive.noglow .g { text-shadow: none; }
+
+  .scene {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  /* Entrance: the eye opens first, the controls follow 60ms later. */
+  .js .controls {
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity 240ms var(--ease-out), transform 240ms var(--ease-out);
+  }
+  .js .controls.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .js .controls { transform: none; }
+  }
+
+  .btn {
+    font: 600 14px/1 var(--mono);
+    letter-spacing: 0.04em;
+    color: var(--text);
+    background: var(--btn-bg);
+    border: 1px solid var(--btn-line);
+    border-radius: 10px;
+    padding: 12px 20px;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none; /* a long-press should press, not select the label */
+    transition:
+      transform 160ms var(--ease-out),
+      background-color 150ms ease,
+      border-color 150ms ease;
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover {
+      background: var(--btn-bg-hover);
+      border-color: var(--btn-line-hover);
+    }
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn:focus-visible { outline: 2px solid var(--iris-hi); outline-offset: 3px; }
+
+  .hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    transition: opacity 250ms var(--ease-out);
+  }
+  .hint.gone { opacity: 0; }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  /* Short windows: tighter spacing and no hint, so the eye keeps what size it can. */
+  .compact .stage { gap: 10px; padding: 8px 16px; }
+  .compact .hint { display: none; }
+</style>
+</head>
+<body>
+  <pre class="layer" id="field" aria-hidden="true"></pre>
+  <pre class="layer" id="ecg" aria-hidden="true"></pre>
+
+  <main class="stage">
+    <div role="img" id="eyeImg" aria-label="An ASCII eye that follows your cursor">
+      <pre class="eye" id="eye" aria-hidden="true"></pre>
+    </div>
+    <div id="controlsWrap">
+      <div class="controls" id="controls">
+        <button class="btn" id="blink" type="button" aria-label="Blink">[ <span id="label">blink</span> ]</button>
+        <p class="hint" id="hint">move your cursor</p>
+        <p class="hint" id="scrollCue">scroll &darr;</p>
+      </div>
+    </div>
+    <!-- Outside #controlsWrap, which goes inert while diving: the story stays reachable at any scroll. -->
+    <p class="sr-only" id="story">Scroll down to dive through the pupil: in an ASCII bedroom a person floats above the
+      bed, a flying saucer arrives, and its lime beam lifts them up into the ship until light fills the screen
+      and the word SPAWN appears.</p>
+  </main>
+  <pre class="eye dive" id="dive" aria-hidden="true"></pre>
+  <canvas class="scene" id="scene" aria-hidden="true"></canvas>
+  <div class="track" aria-hidden="true"></div>
+
+  <script src="parts/ascii-canvas.js"></script>
+  <script src="parts/scene-room.js"></script>
+  <script src="parts/scene-ufo.js"></script>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const fieldEl = $('field');
+  const ecgEl = $('ecg');
+  const eyeEl = $('eye');
+  const btn = $('blink');
+  const label = $('label');
+  const hint = $('hint');
+  const controls = $('controls');
+  const controlsWrap = $('controlsWrap');
+  const diveEl = $('dive');
+  const sceneEl = $('scene');
+  const reduceMQ = matchMedia('(prefers-reduced-motion: reduce)');
+
+  // The story should start at the eye, not wherever a reload left the scroll position.
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  scrollTo(0, 0);
+  const fineMQ = matchMedia('(hover: hover) and (pointer: fine)');
+
+  // ---------- easing: the same curves as the CSS tokens ----------
+  function cubicBezier(x1, y1, x2, y2) {
+    const cx = 3 * x1, bx = 3 * (x2 - x1) - cx, ax = 1 - cx - bx;
+    const cy = 3 * y1, by = 3 * (y2 - y1) - cy, ay = 1 - cy - by;
+    const sx = (t) => ((ax * t + bx) * t + cx) * t;
+    const sy = (t) => ((ay * t + by) * t + cy) * t;
+    const dsx = (t) => (3 * ax * t + 2 * bx) * t + cx;
+    return (x) => {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      let t = x;
+      for (let i = 0; i < 8; i++) {
+        const err = sx(t) - x;
+        if (Math.abs(err) < 1e-5) return sy(t);
+        const d = dsx(t);
+        if (Math.abs(d) < 1e-6) break;
+        t = Math.min(1, Math.max(0, t - err / d));
+      }
+      let lo = 0, hi = 1;
+      t = x;
+      for (let i = 0; i < 30; i++) {
+        const v = sx(t);
+        if (Math.abs(v - x) < 1e-5) break;
+        if (v < x) lo = t; else hi = t;
+        t = (lo + hi) / 2;
+      }
+      return sy(t);
+    };
+  }
+  const easeOut = cubicBezier(0.23, 1, 0.32, 1);
+  const easeInOut = cubicBezier(0.77, 0, 0.175, 1);
+
+  // Damped spring, semi-implicit Euler. Carries velocity, so retargeting mid-motion stays smooth.
+  function spring(s, target, k, c, dt) {
+    s.v += (k * (target - s.x) - c * s.v) * dt;
+    s.x += s.v * dt;
+  }
+
+  // The visible area: the page scrolls now, so innerWidth would include a classic scrollbar.
+  const viewport = () => ({ w: document.documentElement.clientWidth, h: document.documentElement.clientHeight });
+
+  // Progress through [a, b], clamped: the unit every scroll-driven value is built from.
+  const seg = (p, a, b) => Math.min(1, Math.max(0, (p - a) / (b - a)));
+  const setOpacity = (el, a) => {
+    const v = a >= 1 ? '' : String(Math.max(0, a));
+    if (el.style.opacity !== v) el.style.opacity = v;
+  };
+  const show = (el, on) => {
+    const v = on ? 'visible' : 'hidden';
+    if (el.style.visibility !== v) el.style.visibility = v;
+  };
+
+  const smoothstep = (a, b, x) => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const hash = (x, y) => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+
+  // ---------- heartbeat ----------
+  const PERIOD = 60 / 66; // 66 bpm
+  const DUB = 0.17;       // second heart sound lands 170ms after the first
+  const kick = (dt) => (dt <= 0 ? 0 : (dt / 0.07) * Math.exp(1 - dt / 0.07));
+  function pulse(t) {
+    const k = Math.floor(t / PERIOD);
+    let v = 0;
+    for (let i = k - 1; i <= k; i++) {
+      const tb = i * PERIOD;
+      v += kick(t - tb) + 0.6 * kick(t - tb - DUB);
+    }
+    return v;
+  }
+
+  // P, Q, R, S, T waves as [offset s, amplitude, width s]; the R peak sits on the beat.
+  const WAVES = [
+    [-0.17, 0.14, 0.028],
+    [-0.035, -0.12, 0.012],
+    [0, 1, 0.02],
+    [0.035, -0.3, 0.016],
+    [0.25, 0.28, 0.045],
+  ];
+  function ecgAt(t) {
+    const ph = t - PERIOD * Math.round(t / PERIOD);
+    let v = 0;
+    for (const [o, a, w] of WAVES) {
+      const z = (ph - o) / w;
+      v += a * Math.exp(-z * z);
+    }
+    return v;
+  }
+
+  // ---------- eye geometry, in row units (a column is AR rows wide) ----------
+  const EW = 20;    // half width, corner to centre
+  const HT = 8.4;   // upper lid arch
+  const HB = 7;     // lower lid arch
+  const IR = 6.3;   // iris radius
+  const PR = 2.4;   // resting pupil radius
+  const MAX_X = 8.2, MAX_Y = 2.9; // how far the iris can travel
+  const ROWS = 21, CY = 12;
+  const IRIS_RAMP = ':-=+*#%@';
+  let AR = 0.6, COLS = 71, CX = 35, eyeFs = 16, lastEyeKey = '';
+
+  const wrap = (s, k) => (!s ? '' : k ? `<span class="${k}">${s}</span>` : s);
+
+  // Draws the eye into any grid: (cx, cy) is the eye centre in grid cells and zoom scales the geometry,
+  // so the same code paints the resting eye and the full-screen dive.
+  function renderEye(el, cols, rows, cx, cy, zoom, ix, iy, closure, pupil, gaze) {
+    const hTop = HT * (1 - 0.1 * gaze); // the lid lifts when looking up
+    const ew2 = EW * EW;
+    const lid = (x) => Math.max(0, 1 - (x * x) / ew2);
+    const topAt = (x) => {
+      const f = lid(x);
+      return -hTop * f + (hTop * f + HB * f * 0.92) * closure;
+    };
+    const botAt = (x) => HB * lid(x) * (1 - 0.08 * closure);
+
+    // Lines: one '_' per column along the bottom of its cell, and a slash wherever the line steps a row.
+    const cells = new Map();
+    const topRow = new Int16Array(cols).fill(-1);
+    const trace = (curve, cls, reach, lineRows) => {
+      const rs = [];
+      for (let col = 0; col < cols; col++) {
+        const x = ((col - cx) * AR) / zoom;
+        rs.push(Math.abs(x) > reach ? null : Math.round(curve(x) * zoom + cy - 0.5));
+      }
+      // A lone column one row off its neighbours reads as a notch, not a curve.
+      for (let col = 1; col < cols - 1; col++) {
+        const a = rs[col - 1];
+        if (a !== null && a === rs[col + 1] && rs[col] !== a) rs[col] = a;
+      }
+      let prev = null;
+      for (let col = 0; col < cols; col++) {
+        const r = rs[col];
+        if (r === null) { prev = null; continue; }
+        if (prev === null || r === prev) {
+          cells.set(r * cols + col, ['_', cls]);
+          if (lineRows) lineRows[col] = r;
+        } else if (r < prev) {
+          for (let k = prev; k > r; k--) cells.set(k * cols + col, ['/', cls]);
+        } else {
+          for (let k = prev + 1; k <= r; k++) cells.set(k * cols + col, ['\\', cls]);
+        }
+        prev = r;
+      }
+    };
+    trace(botAt, 'l', EW);
+    trace(topAt, 'l', EW, topRow); // the upper lid wins where the lids meet
+
+    // Lashes grow out of the upper lid: up while open, down once shut, hidden mid-blink.
+    const lashUp = closure < 0.4;
+    const lashDown = closure > 0.85;
+    if (lashUp || lashDown) {
+      for (let col = 0; col < cols; col++) {
+        const k = Math.round(col - cx);
+        const x = ((col - cx) * AR) / zoom;
+        if (k % 3 || Math.abs(x) > EW * 0.78 || topRow[col] < 0) continue;
+        const side = x < -EW * 0.3 ? -1 : x > EW * 0.3 ? 1 : 0;
+        const chr = side === 0 ? '|' : (side < 0) === lashUp ? '\\' : '/';
+        cells.set((lashUp ? topRow[col] : topRow[col] + 1) * cols + col, [chr, 'h']);
+      }
+    }
+
+    const g1x = ix - 1.6, g1y = iy - 1.5;
+    const g2x = ix + 1.4, g2y = iy + 1.3;
+    let html = '';
+
+    for (let row = 0; row < rows; row++) {
+      const y = (row - cy) / zoom;
+      let run = '', cls = '';
+      for (let col = 0; col < cols; col++) {
+        const x = ((col - cx) * AR) / zoom;
+        let chr = ' ', k = '';
+        const line = cells.get(row * cols + col);
+
+        if (line) {
+          [chr, k] = line;
+        } else {
+          const tc = topAt(x), bc = botAt(x);
+          if (Math.abs(x) < EW && y > tc && y < bc) {
+            const d = Math.hypot(x - ix, y - iy);
+            if (d < IR && Math.hypot(x - g1x, y - g1y) < 0.95) {
+              chr = '@'; k = 'g';
+            } else if (d < IR && Math.hypot(x - g2x, y - g2y) < 0.5) {
+              chr = '*'; k = 'g';
+            } else if (d < pupil) {
+              chr = ' '; k = '';
+            } else if (d < IR) {
+              const rr = (d - pupil) / (IR - pupil);
+              const a = Math.atan2(y - iy, x - ix);
+              const fib = 0.5 + 0.5 * Math.sin(a * 13 + 1.7 * Math.sin(a * 4 + 0.6));
+              let v = 0.42 + 0.38 * fib - 0.2 * rr;
+              k = 'i';
+              if (rr < 0.18 || rr > 0.86) { v += 0.25; k = 'j'; }
+              if (y - tc < 1.6) v -= 0.3; // the upper lid casts a shadow
+              chr = IRIS_RAMP[Math.max(0, Math.min(7, (v * 8) | 0))];
+            } else {
+              const shaded = y - tc < 1.1 || Math.abs(x) > EW * 0.84;
+              chr = shaded ? ':' : '.';
+              k = shaded ? 'd' : 's';
+            }
+          }
+        }
+
+        if (k !== cls) {
+          html += wrap(run, cls);
+          run = '';
+          cls = k;
+        }
+        run += chr;
+      }
+      html += wrap(run, cls) + (row < rows - 1 ? '\n' : '');
+    }
+    el.innerHTML = html;
+  }
+
+  // ---------- background grid ----------
+  const RAMP = ' .:-=+*#%@';
+  const ECG_CLS = ['', 'h', 'a', 'b', 'c'];
+  const SWEEP = 3.4;       // seconds for the trace to cross the screen
+  const ECG_AMP = 5.2;     // rows the R wave climbs
+  const RING_SPEED = 360;  // px/s
+  const RING_W = 34;       // px
+  const SHOCK_SPEED = 1100; // px/s, the blink pulse
+  const SHOCK_W = 70;       // px
+  const SHOCK_LIFE = 4.5;   // s
+  const RING_LIFE = 3.5;    // s
+  // Letters on the edge of their dissolve threshold flip on any leftover glow, so waves fade to
+  // exactly zero before they're dropped instead of being cut off.
+  const fadeOut = (age, life) => 1 - smoothstep(life - 1.5, life, age);
+
+  // ---------- hidden SPAWN lettering ----------
+  const WORD = 'SPAWN';
+  // [x, y, align, size] as viewport fractions; the eye and controls mask out any overlap.
+  // Letters need ~10 rows of cap height to read in ASCII, so two big ones carry the word.
+  const SPAWNS = [
+    [0.03, 0.03, 'left', 1],
+    [0.97, 0.97, 'right', 1],
+    [0.97, 0.04, 'right', 0.55],
+    [0.03, 0.96, 'left', 0.55],
+  ];
+  const spawnPhase = SPAWNS.map((_, k) => [7 + ((k * 2.3) % 6), k * 1.7]); // [period s, phase]
+  let spawnMask, spawnId;
+
+  // Rasterise each SPAWN straight onto the character grid: one canvas pixel per cell.
+  function buildSpawn(w, h) {
+    const cv = document.createElement('canvas');
+    cv.width = fCols;
+    cv.height = fRows;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    spawnMask = new Float32Array(fCols * fRows);
+    spawnId = new Int8Array(fCols * fRows).fill(-1);
+    const base = Math.max(60, Math.min(260, h * 0.26, w * 0.14));
+    SPAWNS.forEach(([fx, fy, align, scale], k) => {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, fCols, fRows);
+      ctx.setTransform(1 / cw, 0, 0, 1 / ch, 0, 0); // draw in screen px, land in cells
+      ctx.font = `900 ${base * scale}px "Arial Black", "Segoe UI Black", Impact, sans-serif`;
+      ctx.letterSpacing = `${Math.round(base * scale * 0.1)}px`; // open gaps so letters don't fuse into a block
+      ctx.textAlign = align;
+      ctx.textBaseline = fy < 0.5 ? 'top' : 'bottom';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(WORD, fx * w, fy * h);
+      const data = ctx.getImageData(0, 0, fCols, fRows).data;
+      for (let i = 0; i < spawnMask.length; i++) {
+        const a = data[i * 4 + 3] / 255;
+        if (a > spawnMask[i]) {
+          spawnMask[i] = a;
+          spawnId[i] = k;
+        }
+      }
+    });
+  }
+
+  let fCols = 0, fRows = 0, cw = 8.4, ch = 14, ecgRow = 0;
+  let eye = { cx: 0, cy: 0 };
+  let dive = { cols: 0, rows: 0, cx: 0, cy: 0, sx: 0, sy: 0 };
+  let dist, mask, hole, dither, ecgOk, occ, ecgCh, sx, sy, rowChars;
+  let needsLayout = true, bgDirty = true, lastField = -Infinity;
+
+  function measureRatio() {
+    const probe = document.createElement('span');
+    probe.style.cssText =
+      'position:absolute;visibility:hidden;white-space:pre;font-size:100px;line-height:1;font-family:' +
+      getComputedStyle(document.body).fontFamily;
+    probe.textContent = '0'.repeat(50);
+    document.body.appendChild(probe);
+    const r = probe.getBoundingClientRect().width / 5000;
+    probe.remove();
+    return r || 0.6;
+  }
+
+  function layout() {
+    needsLayout = false;
+    const { w, h } = viewport();
+    laidW = w;
+    laidH = h;
+    laidDpr = devicePixelRatio || 1;
+
+    AR = measureRatio();
+    COLS = 2 * Math.ceil(EW / AR) + 3;
+    CX = (COLS - 1) / 2;
+    // Fit the eye into the height the controls leave. Below ~9px the ASCII turns to mush,
+    // so short windows drop the hint and tighten spacing before the eye shrinks further.
+    const fit = (pad, gap) => ((h - pad * 2 - gap - controls.getBoundingClientRect().height) * 0.95) / ROWS;
+    document.body.classList.remove('compact');
+    let heightFit = fit(16, 28);
+    if (heightFit < 9) {
+      document.body.classList.add('compact');
+      heightFit = fit(8, 10);
+    }
+    eyeFs = Math.max(4, Math.min(20, (w * 0.92) / (COLS * AR), heightFit));
+    eyeEl.style.fontSize = eyeFs + 'px';
+    renderEye(eyeEl, COLS, ROWS, CX, CY, 1, 0, 0, closure, PR, 0); // give the eye its real size before measuring
+    lastEyeKey = '';
+    const r = eyeEl.getBoundingClientRect();
+    eye = { cx: r.left + r.width / 2, cy: r.top + (CY + 0.5) * eyeFs };
+
+    // The dive grid covers the screen and lines up with the eye's own cells, so swapping to it on the
+    // first scrolled pixel changes nothing on screen.
+    const ecw = eyeFs * AR;
+    const kx = Math.ceil(r.left / ecw), ky = Math.ceil(r.top / eyeFs);
+    const left = r.left - kx * ecw, top = r.top - ky * eyeFs;
+    dive = {
+      cols: Math.ceil((w - left) / ecw) + 1,
+      rows: Math.ceil((h - top) / eyeFs) + 1,
+      cx: CX + kx,
+      cy: CY + ky,
+      sx: (w / 2 - left) / ecw - 0.5, // screen centre in grid cells: the dive pans the pupil here
+      sy: (h / 2 - top) / eyeFs - 0.5,
+    };
+    diveEl.style.fontSize = eyeFs + 'px';
+    diveEl.style.left = left + 'px';
+    diveEl.style.top = top + 'px';
+    // Eye units are px / eyeFs, so the pupil (radius PR * zoom) covers the corners of the panned view once
+    // zoom reaches the half-diagonal / PR. Reach that (with margin) by 85% of the dive, just before the
+    // room starts to show through the pupil.
+    zoomMax = Math.max(22, Math.pow((1.06 * Math.hypot(w, h)) / (2 * eyeFs * PR), 1 / 0.85));
+    sceneLayout(w, h);
+
+    const fs = w < 600 ? 12 : 14;
+    fieldEl.style.fontSize = ecgEl.style.fontSize = fs + 'px';
+    cw = fs * AR;
+    ch = fs;
+    fCols = Math.ceil(w / cw) + 1;
+    fRows = Math.ceil(h / ch) + 1;
+    ecgRow = Math.round(eye.cy / ch - 0.85);
+
+    const n = fCols * fRows;
+    dist = new Float32Array(n);
+    mask = new Float32Array(n);
+    hole = new Float32Array(n);
+    dither = new Float32Array(n);
+    ecgOk = new Uint8Array(n);
+    occ = new Uint8Array(n);
+    ecgCh = new Uint16Array(n);
+    sx = new Float32Array(fCols);
+    sy = new Float32Array(fRows);
+    rowChars = new Array(fCols);
+
+    const c = controls.getBoundingClientRect();
+    const pad = 12;
+    const rx = (EW + 3) * eyeFs, ry = (HT + 3.5) * eyeFs;
+    const maxD = Math.hypot(w, h) / 2;
+    for (let row = 0; row < fRows; row++) {
+      for (let col = 0; col < fCols; col++) {
+        const i = row * fCols + col;
+        const px = (col + 0.5) * cw, py = (row + 0.5) * ch;
+        const dx = px - eye.cx, dy = py - eye.cy;
+        const d = Math.hypot(dx, dy);
+        const inCtl = px > c.left - pad && px < c.right + pad && py > c.top - pad && py < c.bottom + pad;
+        dist[i] = d;
+        hole[i] = inCtl ? 0 : smoothstep(1, 1.7, (dx / rx) ** 2 + (dy / ry) ** 2);
+        mask[i] = hole[i] * (1 - 0.55 * Math.min(1, d / maxD) ** 2);
+        dither[i] = (hash(col, row) - 0.5) * 0.07;
+        ecgOk[i] = !inCtl && !(Math.abs(dx) < (EW + 0.8) * eyeFs && Math.abs(dy) < (HT + 2) * eyeFs) ? 1 : 0;
+      }
+    }
+    buildSpawn(w, h);
+    storyP = NaN;
+    bgDirty = true;
+    lastField = -Infinity;
+  }
+
+  function renderBackground(t, still, withField, shockAges) {
+    occ.fill(0);
+
+    // ECG trace: each column keeps the moment the writing head passed it.
+    const cps = fCols / SWEEP;
+    const head = ((t / SWEEP) % 1) * fCols;
+    const base = ecgRow + 0.85;
+    let top = fRows, bottom = -1;
+    for (let col = 0; col < fCols; col++) {
+      const age = still ? (fCols - col) / cps : ((((head - col) % fCols) + fCols) % fCols) / cps;
+      let bucket;
+      if (still) bucket = 3;
+      else if (age < 1 / cps) bucket = 1;
+      else if (age < 0.45) bucket = 2;
+      else if (age < 1.5) bucket = 3;
+      else if (age < 2.6) bucket = 4;
+      else continue; // erased gap ahead of the head
+
+      const tc = t - age;
+      let y0 = 0, y1 = 0, lo = Infinity, hi = -Infinity;
+      for (let s = 0; s <= 4; s++) {
+        const y = base - ecgAt(tc + s / 4 / cps) * ECG_AMP;
+        if (s === 0) y0 = y;
+        if (s === 4) y1 = y;
+        if (y < lo) lo = y;
+        if (y > hi) hi = y;
+      }
+      const span = hi - lo, slope = y1 - y0;
+      let chr;
+      if (span >= 1.6) chr = '|';
+      else if (span < 0.35) chr = lo - Math.floor(lo) > 0.55 ? '_' : '-';
+      else if (slope < -0.15) chr = '/';
+      else if (slope > 0.15) chr = '\\';
+      else chr = '-';
+      const code = chr.charCodeAt(0);
+
+      for (let row = Math.floor(lo); row <= Math.floor(hi); row++) {
+        if (row < 0 || row >= fRows) continue;
+        const i = row * fCols + col;
+        if (!ecgOk[i]) continue;
+        occ[i] = bucket;
+        ecgCh[i] = code;
+        if (row < top) top = row;
+        if (row > bottom) bottom = row;
+      }
+    }
+
+    let ecgHtml = '\n'.repeat(Math.max(0, top));
+    for (let row = top; row <= bottom; row++) {
+      let run = '', cls = 0;
+      for (let col = 0; col < fCols; col++) {
+        const i = row * fCols + col;
+        const b = occ[i];
+        if (b !== cls) {
+          ecgHtml += wrap(run, ECG_CLS[cls]);
+          run = '';
+          cls = b;
+        }
+        run += b ? String.fromCharCode(ecgCh[i]) : ' ';
+      }
+      ecgHtml += wrap(run, ECG_CLS[cls]) + '\n';
+    }
+    ecgEl.innerHTML = ecgHtml;
+
+    if (!withField) return;
+
+    // The field redraws every other frame, so it keeps clear of where the head draws next.
+    const headCol = Math.floor(head);
+    const bandTop = ecgRow - 6, bandBot = ecgRow + 3;
+
+    // Field: a slow drifting texture plus a ring for every heartbeat.
+    for (let col = 0; col < fCols; col++) sx[col] = Math.sin(col * 0.23 + t * 0.8);
+    for (let row = 0; row < fRows; row++) sy[row] = Math.sin(row * 0.37 - t * 0.6);
+    const p = still ? 0 : pulse(t);
+    const rings = [];
+    if (!still) {
+      const k = Math.floor(t / PERIOD);
+      for (let b = k - 3; b <= k; b++) {
+        for (const [off, amp] of [[0, 1], [DUB, 0.55]]) {
+          const age = t - b * PERIOD - off;
+          if (age >= 0 && age < RING_LIFE) rings.push(age * RING_SPEED, amp * Math.exp(-age) * fadeOut(age, RING_LIFE));
+        }
+      }
+    }
+
+    // Every blink sends a lub-dub shockwave out of the eye; SPAWN lights up as it passes.
+    const shock = [];
+    let flash = 0;
+    if (!still) {
+      for (const [age, strength] of shockAges) {
+        for (const [off, amp] of [[0, 1.4], [DUB, 0.7]]) {
+          const a = age - off;
+          if (a >= 0) shock.push(a * SHOCK_SPEED, strength * amp * Math.exp(-a / 0.9) * fadeOut(age, SHOCK_LIFE));
+        }
+        if (strength >= 1) flash += 0.9 * kick(age); // only a click earns the full-screen flash
+      }
+      flash = Math.min(flash, 1.2);
+    }
+    // Each SPAWN breathes on its own slow cycle: gone at the trough, ~60% dissolved in at the peak.
+    const amb = spawnPhase.map(([per, ph]) => 0.05 + 0.15 * (0.5 + 0.5 * Math.sin((t / per) * Math.PI * 2 + ph)));
+
+    let out = '';
+    for (let row = 0; row < fRows; row++) {
+      for (let col = 0; col < fCols; col++) {
+        const i = row * fCols + col;
+        const m = mask[i];
+        const nearHead =
+          !still && row >= bandTop && row <= bandBot && (((col - headCol) % fCols) + fCols) % fCols <= 3;
+        if (occ[i] || m === 0 || nearHead) {
+          rowChars[col] = ' ';
+          continue;
+        }
+        const sm = spawnMask[i];
+        const d = dist[i];
+        let wave = 0;
+        for (let r = 0; r < rings.length; r += 2) {
+          const z = (d - rings[r]) / RING_W;
+          if (z > -3 && z < 3) wave += rings[r + 1] * Math.exp(-z * z);
+        }
+        for (let r = 0; r < shock.length; r += 2) {
+          const z = (d - shock[r]) / SHOCK_W;
+          if (z > -3 && z < 3) wave += shock[r + 1] * Math.exp(-z * z);
+        }
+        let v = ((0.07 + 0.055 * sx[col] * sy[row]) * (1 + 0.5 * p + flash) + dither[i] + wave) * m;
+        if (sm > 0) {
+          // Letters skip the vignette so the corners can still spell, and waves burn brighter through them.
+          let lit = sm * (amb[spawnId[i]] + 1.2 * wave);
+          // They glow from the moment a wave passes (the freshest wins); reduced motion fades them all at once.
+          let glow = 0;
+          for (const [age, strength] of shockAges) {
+            const passed = still ? age : age - d / SHOCK_SPEED;
+            if (passed > 0) glow = Math.max(glow, strength * Math.exp(-passed / 1.2) * fadeOut(age, SHOCK_LIFE));
+          }
+          lit += sm * 0.8 * glow;
+          // One colour can't fade, so the letters dissolve: each cell flips to a letter of the word
+          // once it passes its own threshold, and drops back to texture below it.
+          if (sm > 0.45 && lit * hole[i] > 0.08 + 0.2 * (dither[i] / 0.07 + 0.5)) {
+            rowChars[col] = WORD[(col + row * 2) % 5];
+            continue;
+          }
+        }
+        rowChars[col] = RAMP[v <= 0 ? 0 : Math.min(9, (v * 10) | 0)];
+      }
+      out += rowChars.join('') + '\n';
+    }
+    fieldEl.textContent = out;
+  }
+
+  // ---------- gaze ----------
+  const gazeX = { x: 0, v: 0 };
+  const gazeY = { x: 0, v: 0 };
+  const dilate = { x: 0, v: 0 };
+  const target = { x: 0, y: 0 };
+  let lastMove = -Infinity, nextSaccade = 0, hovering = false;
+
+  function aim(px, py) {
+    const dx = px - eye.cx, dy = py - eye.cy;
+    const d = Math.hypot(dx, dy) || 1;
+    const s = d / (d + 220); // soft limit: far away still reads as "over there", never pinned
+    target.x = (dx / d) * s;
+    target.y = (dy / d) * s;
+    lastMove = performance.now() / 1000;
+    hint.classList.add('gone');
+  }
+  addEventListener('pointermove', (e) => aim(e.clientX, e.clientY));
+  addEventListener('pointerdown', (e) => aim(e.clientX, e.clientY));
+  document.documentElement.addEventListener('mouseleave', () => { lastMove = -Infinity; });
+  addEventListener('blur', () => { lastMove = -Infinity; });
+
+  // ---------- blink ----------
+  const CLOSE = 0.075, HOLD = 0.035, OPEN = 0.16;
+  const INTRO = 0.4; // the eye wakes up on load
+  let blink = null, nextBlink = Infinity, closure = 1;
+  let introAt = Infinity, controlsIn = false, shocks = []; // { t: start s, s: strength }
+
+  // Starts from the current lid position, so a click mid-blink retargets instead of jumping.
+  // A click closes with ease-out so the lid moves on the very next frame; idle blinks keep the softer in-out.
+  function startBlink(now, fromUser = false) {
+    blink = { start: now, from: closure, ease: fromUser ? easeOut : easeInOut, onShut: fromUser ? clickShut : idleShut };
+  }
+  // The lid is down: every blink fires a pulse from behind it. Idle blinks come every few seconds,
+  // so theirs is half strength with no flash; a click gets the full pulse and swaps the iris colour unseen.
+  const fireShock = (strength) => shocks.push({ t: performance.now() / 1000, s: strength });
+  const idleShut = () => fireShock(0.5);
+  const clickShut = () => {
+    // On <body> so the resting eye and the dive grid swap together.
+    document.body.dataset.iris = document.body.dataset.iris === 'lime' ? 'purple' : 'lime';
+    fireShock(1);
+  };
+  function blinkAt(now) {
+    if (!blink) return 0;
+    const e = now - blink.start;
+    if (e >= CLOSE && blink.onShut) {
+      blink.onShut();
+      blink.onShut = null;
+    }
+    if (e < CLOSE) return blink.from + (1 - blink.from) * blink.ease(e / CLOSE);
+    if (e < CLOSE + HOLD) return 1;
+    if (e < CLOSE + HOLD + OPEN) return 1 - easeOut((e - CLOSE - HOLD) / OPEN);
+    blink = null;
+    return 0;
+  }
+
+  // ---------- button ----------
+  const GLYPHS = '#%&*+=-:/\\|<>';
+  let scrambling = false;
+  function scramble() {
+    if (scrambling || reduceMQ.matches) return;
+    scrambling = true;
+    const word = 'blink';
+    const start = performance.now();
+    let noise = '', swapped = -Infinity;
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / 240);
+      const settled = Math.floor(p * word.length); // letters lock in left to right
+      if (now - swapped >= 45) {
+        // ~22 swaps a second reads as shuffling letters; a swap every frame reads as static
+        noise = Array.from(word, () => GLYPHS[(Math.random() * GLYPHS.length) | 0]).join('');
+        swapped = now;
+      }
+      label.textContent = word.slice(0, settled) + noise.slice(settled);
+      if (p < 1) requestAnimationFrame(tick);
+      else { label.textContent = word; scrambling = false; }
+    };
+    requestAnimationFrame(tick);
+  }
+
+  btn.addEventListener('click', () => startBlink(performance.now() / 1000, true));
+  btn.addEventListener('pointerenter', (e) => {
+    if (e.pointerType !== 'mouse' || !fineMQ.matches) return;
+    hovering = true;
+    scramble();
+  });
+  btn.addEventListener('pointerleave', () => { hovering = false; });
+
+  hint.textContent = fineMQ.matches ? 'move your cursor' : 'tap to aim the eye';
+  $('eyeImg').setAttribute('aria-label', fineMQ.matches ? 'An ASCII eye that follows your cursor' : 'An ASCII eye that looks where you tap');
+
+  // ---------- scroll story ----------
+  // Scroll progress P (0..1) is the timeline. Cause comes before effect: the ship parks, then the beam
+  // strikes, then the beam lifts.
+  //   0    - 0.30  dive: zoom through the pupil while the controls, glow and background fall away
+  //   0.26 - 0.50  the room shows through the pupil and keeps approaching (it grows into place)
+  //   0.30 - 0.58  the person hovers just above the bed and drifts up a little
+  //   0.36 - 0.52  the room's light dies, so the ship arrives into the dark
+  //   0.40 - 0.60  the ship enters from the right edge and glides into its hover spot
+  //   0.60 - 0.72  the beam strikes as a line, then the cone opens
+  //   0.64 - 0.88  the beam draws the person up
+  //   0.74 - 0.92  taken in: the body rises into the hull and dissolves into the light
+  //   0.86 - 1     light blooms from the emitter until it fills the screen; SPAWN surfaces at the very end
+  const DIVE_END = 0.3, SCENE_START = 0.26;
+  let zoomMax = 22; // per viewport (layout): the pupil has to cover the screen before the room shows through it
+  const progress = { x: 0, v: 0 };
+  const shipBank = { x: 0, v: 0 };
+  let scene = null, sceneFs = 0, sceneBroken = false;
+  let storyP = NaN; // reduced motion: the P the static scene was last drawn at; NaN forces a redraw
+  // A gentle ease-out for the ship's entrance: scroll scrubs it, and the strong UI curve would whip it in
+  // faster than the scroll that drives it. This one starts under 2x average speed and glides to a stop.
+  const easeGlide = cubicBezier(0.25, 0.46, 0.45, 0.94);
+
+  // The track scales with the viewport but scroll positions are pixels: when the track itself changes
+  // height (rotation, window resize), put the reader back at the same point of the story. A mobile URL
+  // bar showing or hiding leaves the lvh track alone, so it never triggers a jump mid-swipe.
+  const trackEl = document.querySelector('.track');
+  let lastTrackH = 0, lastP = 0;
+  function readScroll() {
+    const de = document.documentElement;
+    const max = de.scrollHeight - de.clientHeight;
+    const trackH = trackEl.offsetHeight;
+    if (trackH !== lastTrackH) {
+      if (lastTrackH > 0 && max > 0 && lastP > 0) scrollTo(0, Math.round(lastP * max));
+      lastTrackH = trackH;
+    }
+    lastP = max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 0;
+    return lastP;
+  }
+
+  // If the scene cannot run (a module failed to load, no canvas backend), the page falls back to the
+  // resting eye: no scroll track, no cue, and P glides back to 0 through the progress spring.
+  function breakScene(e) {
+    console.error(e);
+    sceneBroken = true;
+    scene = null;
+    show(sceneEl, false);
+    trackEl.style.display = 'none';
+    $('scrollCue').hidden = true;
+  }
+
+  function sceneLayout(w, h) {
+    if (sceneBroken) return;
+    const parts = window.AsciiParts;
+    if (!parts || !parts.createAsciiRenderer || !parts.drawRoom || !parts.drawPerson || !parts.drawUfo || !parts.drawBeam) {
+      breakScene(new Error('ASCII scene modules are missing'));
+      return;
+    }
+    try {
+      const fs = w < 600 ? 10 : 12;
+      if (!scene || fs !== sceneFs) {
+        sceneFs = fs;
+        scene = parts.createAsciiRenderer(sceneEl, {
+          fontFamily: getComputedStyle(document.body).fontFamily,
+          fontSize: fs,
+          ramp: ' .,:;=+*#%@',
+          palette: {
+            bg: '#0b0714',
+            purple: ['#3d2b63', '#6e51a8', '#a98be6', '#e2d6ff'],
+            lime: ['#3f6212', '#7cc22e', '#c7f37a'],
+            white: '#ffffff',
+          },
+        });
+      }
+      scene.resize(w, h, devicePixelRatio || 1);
+    } catch (e) {
+      breakScene(e);
+    }
+  }
+
+  // Where the ship is at progress P: just past the right edge at 0.40, parked at its hover spot by 0.60.
+  function shipAt(P, w, h, ua, still) {
+    if (still) return { x: ua.x, y: ua.y, size: ua.size, f: 1 };
+    const f = easeGlide(seg(P, 0.4, 0.6));
+    // At f = 0 the drawn half-width is 0.72 * size, so this keeps the rim just out of view until 0.40.
+    const x0 = w + ua.size * 0.8, y0 = ua.y - h * 0.08;
+    return {
+      x: x0 + (ua.x - x0) * f,
+      y: y0 + (ua.y - y0) * f + Math.sin(Math.PI * f) * h * 0.05, // dips on the way in, then settles
+      size: ua.size * (0.72 + 0.28 * f), // grows a little as it approaches
+      f,
+    };
+  }
+
+  function drawStory(now, P, still) {
+    const { w, h } = viewport();
+    const pa = AsciiParts.personAnchor(w, h);
+    const ua = AsciiParts.ufoAnchor(w, h);
+    const ctx = scene.begin();
+
+    // Out of the pupil the room is still approaching: it grows into place at about the dive's own rate,
+    // so the fall forward carries on instead of braking at the hand-off. The wall is overscanned for this.
+    const cam = still ? 1 : 0.6 + 0.4 * easeOut(seg(P, SCENE_START, 0.5));
+    ctx.save();
+    ctx.translate(w / 2, h / 2);
+    ctx.scale(cam, cam);
+    ctx.translate(-w / 2, -h / 2);
+
+    // The room's light dies before the ship crosses the window, all the way to black: any glow left in
+    // the glass competes with the alien light. Brightness change, so a gentle in-out.
+    const dark = smoothstep(0.36, 0.52, P);
+    if (dark < 1) {
+      AsciiParts.drawRoom(ctx, w, h, { t: now, reduced: still, glow: 0 });
+      if (dark > 0) {
+        ctx.fillStyle = `rgba(4, 2, 9, ${dark})`;
+        ctx.fillRect(-w, -h, w * 3, h * 3); // oversized: the camera may still be scaled below 1
+      }
+    }
+
+    const ship = shipAt(P, w, h, ua, still);
+    const shipBob = still ? 0 : Math.sin(now * 2.2) * h * 0.005 * ship.f;
+    // Once the ship has parked the beam strikes as a line, then the cone opens. Both are entrances, so
+    // both ease out; the cone starts under the belly and is wide enough to hold the body.
+    const strike = still ? seg(P, 0.6, 0.72) : easeOut(seg(P, 0.6, 0.68));
+    if (strike > 0) {
+      AsciiParts.drawBeam(ctx, w, h, {
+        x: ship.x,
+        topY: ship.y + shipBob + ship.size * 0.16,
+        bottomY: h * 0.86,
+        topWidth: ship.size * 1.2,
+        bottomWidth: Math.max(ship.size * 2.2, pa.scale * 1.4),
+        open: still ? 1 : easeOut(seg(P, 0.63, 0.72)),
+        intensity: strike,
+        t: now,
+        reduced: still,
+      });
+    }
+
+    // Light at the end blooms out of the beam's origin until it fills the screen. It is drawn behind the
+    // person and the ship, so they stay backlit cut-outs in it. Glyphs appear at a few percent alpha, so
+    // the radius, not the alpha, decides how fast the screen fills: it reaches the far corners only at the
+    // very end. Every stop stays green-dominant until it is bright enough to be white, so the light never
+    // passes through lavender.
+    const end = seg(P, 0.86, 1);
+    if (end > 0) {
+      const lx = ship.x, ly = ship.y + shipBob + ship.size * 0.3;
+      const R = Math.hypot(w, h) * (still ? 1.1 : 0.1 + 0.6 * smoothstep(0.86, 1, P));
+      const a = still ? end : smoothstep(0.86, 0.98, P);
+      const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, R);
+      g.addColorStop(0, `rgba(${(150 + 90 * a) | 0}, 255, ${(90 + 150 * a) | 0}, ${a})`);
+      g.addColorStop(0.45, `rgba(180, 255, 110, ${a * 0.9})`);
+      g.addColorStop(1, 'rgba(120, 230, 60, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(-w, -h, w * 3, h * 3);
+    }
+
+    // The person hovers just above the bed and drifts up a little in the lit room; once the beam is on, it
+    // draws them up. Scroll scrubs this, so smoothstep: a gentle in-out with no derivative jumps.
+    const climb = still ? 0 : 0.12 * smoothstep(0.3, 0.58, P) + 0.88 * smoothstep(0.64, 0.88, P);
+    // Taken in: the last stretch into the hull overlaps the end of the climb so there is no stall, and the
+    // exit is a fade (ease-out), letting the beam wash over the silhouette. The hull hides the rest.
+    const taken = still ? 0 : smoothstep(0.7, 0.9, P);
+    const gone = easeOut(seg(P, still ? 0.8 : 0.84, still ? 0.88 : 0.92));
+    const lowY = h * 0.8 - pa.scale * 0.31 - 12; // the lowest limb starts about a cell above the covers
+    const topY = ship.y + ship.size * 0.95; // leaves a stretch of beam between the hull and the back
+    const personBob = still ? 0 : Math.sin(now * 1.43) * h * 0.007;
+    const personAt = (y, scale, lift, alpha) => {
+      if (alpha <= 0) return;
+      ctx.globalAlpha = alpha;
+      // Backlit by the beam, the rim turns lime so it does not fringe the light with purple.
+      AsciiParts.drawPerson(ctx, w, h, { x: pa.x, y, scale, lift, rimLight: strike, t: now, reduced: still });
+      ctx.globalAlpha = 1;
+    };
+    if (still) {
+      // Reduced motion: no travel, but the story still reads. Once the beam is on, the body crossfades from
+      // its low hover to just under the ship (opacity only), then fades into the light like the full version.
+      const k = seg(P, 0.62, 0.72);
+      personAt(lowY, pa.scale, 0, (1 - k) * (1 - gone));
+      personAt(topY, pa.scale * 0.85, 0, k * (1 - gone));
+    } else {
+      personAt(
+        lowY + (topY - lowY) * climb - 0.3 * ship.size * taken + personBob,
+        pa.scale * (1 - 0.15 * climb) * (1 - 0.3 * taken), // smaller as it is drawn toward the ship
+        smoothstep(0.64, 0.88, P),
+        1 - gone,
+      );
+    }
+
+    if (still ? P > 0.4 : ship.f > 0) {
+      ctx.globalAlpha = still ? seg(P, 0.4, 0.55) : 1; // reduced motion: the ship fades in where it hovers
+      AsciiParts.drawUfo(ctx, w, h, {
+        x: ship.x,
+        y: ship.y + shipBob,
+        size: ship.size,
+        bank: shipBank.x,
+        lights: seg(P, 0.42, 0.5),
+        keyline: 1 - dark, // a dark edge while it crosses the lit window, gone once the room is dark
+        t: now,
+        reduced: still,
+      });
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    // The word from the background surfaces in the light as a dark cut-out: at least about 10 rows of cap
+    // height so it reads on a phone, squeezed horizontally rather than overflowing.
+    const word = seg(P, 0.95, 1);
+    if (word > 0) {
+      const size = Math.max(Math.min(w * 0.16, h * 0.28), (10 * scene.cellH) / 0.72);
+      ctx.font = `900 ${size}px "Arial Black", "Segoe UI Black", Impact, sans-serif`;
+      ctx.letterSpacing = `${Math.round(size * 0.1)}px`;
+      const squeeze = Math.min(1, (0.92 * w) / ctx.measureText(WORD).width);
+      ctx.save();
+      ctx.translate(w / 2, h / 2);
+      ctx.scale(squeeze, 1);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = `rgba(11, 7, 20, ${word})`;
+      ctx.fillText(WORD, 0, 0);
+      ctx.restore();
+      ctx.letterSpacing = '0px';
+    }
+
+    // The room shows through the pupil grain by grain; it is entering, so it eases out.
+    scene.render({ reveal: easeOut(seg(P, SCENE_START, 0.4)) });
+  }
+
+  // ---------- loop ----------
+  let lastT = performance.now() / 1000;
+  function frame(ms) {
+    // Scheduled first, so an error anywhere below costs one frame, not the whole page.
+    requestAnimationFrame(frame);
+    const now = ms / 1000;
+    let dt = Math.min(0.25, Math.max(0, now - lastT));
+    lastT = now;
+    if (needsLayout) layout();
+    const still = reduceMQ.matches;
+    const scrollTarget = readScroll();
+    const P0 = Math.min(1, Math.max(0, progress.x));
+
+    if (!still && P0 === 0 && now - lastMove > 3.5 && now >= nextSaccade) {
+      const a = Math.random() * Math.PI * 2, m = Math.random() * 0.45;
+      target.x = Math.cos(a) * m;
+      target.y = Math.sin(a) * m * 0.7;
+      nextSaccade = now + 1.2 + Math.random() * 1.6;
+    }
+    // Diving pulls the gaze to the centre so the zoom goes straight into the pupil.
+    const centre = 1 - seg(P0, 0, 0.06);
+    // The ship banks into its flight in proportion to how fast scrolling carries it across the screen.
+    let bankTarget = 0;
+    if (!still && scene && P0 > 0.38 && P0 < 0.64) {
+      const { w: vw, h: vh } = viewport();
+      const ua = AsciiParts.ufoAnchor(vw, vh);
+      const dxdP = (shipAt(P0 + 0.002, vw, vh, ua, false).x - shipAt(P0 - 0.002, vw, vh, ua, false).x) / 0.004;
+      // Gain sized so a wheel notch tilts it about 0.1 rad and only a fling reaches the clamp.
+      bankTarget = Math.max(-0.32, Math.min(0.32, ((dxdP * progress.v) / vw) * 0.2));
+    }
+    // Fixed substeps keep the springs stable and on time when frames are slow.
+    for (; dt > 0; dt -= 1 / 120) {
+      const h = Math.min(dt, 1 / 120);
+      spring(gazeX, target.x * centre, 260, 26, h);
+      spring(gazeY, target.y * centre, 260, 26, h);
+      spring(dilate, hovering ? 1 : 0, 180, 22, h);
+      // Scroll runs through a critically damped spring: wheel steps become one glide, with no overshoot.
+      // Reduced motion only drives fades, so it gets a ~200ms ease-out lag instead: no momentum, but no
+      // full-screen hard cut on every wheel tick either.
+      if (still) {
+        progress.x += (scrollTarget - progress.x) * (1 - Math.exp(-h / 0.07));
+        progress.v = 0;
+      } else {
+        spring(progress, scrollTarget, 170, 26, h);
+      }
+      // zeta ~0.82: the bank trails the scroll slightly and levels without visible overshoot.
+      spring(shipBank, bankTarget, 120, 18, h);
+    }
+    if (Math.abs(progress.x - scrollTarget) < 1e-4 && Math.abs(progress.v) < 1e-3) {
+      progress.x = scrollTarget;
+      progress.v = 0;
+    }
+    const P = Math.min(1, Math.max(0, progress.x));
+
+    if (!still && !blink && now >= nextBlink && P === 0) {
+      startBlink(now);
+      nextBlink = now + (Math.random() < 0.18 ? 0.42 : 2.4 + Math.random() * 3.6);
+    }
+    closure = blinkAt(now);
+    if (now < introAt + INTRO) {
+      const opening = still ? 0 : 1 - easeOut(Math.max(0, now - introAt) / INTRO);
+      closure = Math.max(closure, opening);
+    }
+    if (!controlsIn && now >= introAt + 0.06) {
+      controls.classList.add('in');
+      controlsIn = true;
+    }
+
+    const ix = gazeX.x * MAX_X, iy = gazeY.x * MAX_Y;
+    const pupil = PR + 0.8 * dilate.x;
+
+    // Everything around the eye falls away first; exits ease out, so the first scrolled pixel already answers.
+    setOpacity(controlsWrap, 1 - easeOut(seg(P, 0, 0.05)));
+    const inert = P > 0.02;
+    if (controlsWrap.inert !== inert) controlsWrap.inert = inert; // only on change: it invalidates styles
+    const bgRaw = 1 - easeOut(seg(P, 0, 0.18));
+    const bgAlpha = bgRaw < 0.01 ? 0 : bgRaw; // below 1% it cannot be seen: stop rendering it
+    setOpacity(fieldEl, bgAlpha);
+    setOpacity(ecgEl, bgAlpha);
+
+    // Rebuild the eye only when something visible changed; an idle eye costs nothing.
+    // Reduced motion has no dive to cover the hand-off, so its fade ends exactly where the room begins.
+    const eyeAlpha = still ? 1 - seg(P, 0.08, SCENE_START) : 1 - seg(P, DIVE_END - 0.08, DIVE_END);
+    if (P === 0) {
+      show(eyeEl, true);
+      show(diveEl, false);
+      const key = [ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join();
+      if (key !== lastEyeKey) {
+        lastEyeKey = key;
+        renderEye(eyeEl, COLS, ROWS, CX, CY, 1, ix, iy, closure, pupil, gazeY.x);
+      }
+    } else if (eyeAlpha > 0) {
+      // The dive: an exponential zoom reads as a steady fall; the pupil drifts to the screen centre.
+      // Reduced motion skips the zoom and simply fades the eye.
+      const u = seg(P, 0, DIVE_END);
+      const zoom = still ? 1 : Math.pow(zoomMax, u);
+      const pan = still ? 0 : smoothstep(0, 0.7, u);
+      const cx = dive.cx + (dive.sx - dive.cx) * pan, cy = dive.cy + (dive.sy - dive.cy) * pan;
+      show(eyeEl, false);
+      show(diveEl, true);
+      const key = 'd' + [zoom, cx, cy, ix, iy, closure, pupil, gazeY.x].map((v) => Math.round(v * 50)).join();
+      if (key !== lastEyeKey) {
+        lastEyeKey = key;
+        renderEye(diveEl, dive.cols, dive.rows, cx, cy, zoom, ix, iy, closure, pupil, gazeY.x);
+      }
+      const glow = 1 - seg(P, 0, 0.12);
+      diveEl.style.setProperty('--glow', glow);
+      diveEl.classList.toggle('noglow', glow <= 0);
+      setOpacity(diveEl, eyeAlpha);
+    } else {
+      show(eyeEl, false);
+      show(diveEl, false);
+      lastEyeKey = '';
+    }
+
+    // Shocks overlap, so a new blink never cuts the last pulse off mid-flight.
+    if (shocks.length && now - shocks[0].t >= SHOCK_LIFE) {
+      shocks = shocks.filter((s) => now - s.t < SHOCK_LIFE);
+      if (!shocks.length) bgDirty = true; // one clean redraw once the reveal has faded
+    }
+    const shockAges = shocks.map((s) => [now - s.t, s.s]);
+    // The ECG head draws every frame; the field only needs 30fps, except while a shockwave is
+    // still crossing the screen: at 1100px/s, 30fps would step it 37px a frame.
+    let fieldDue = now - lastField >= 1 / 30 - 0.004;
+    if (bgAlpha <= 0) {
+      // Faded out by the dive: skip the work entirely.
+    } else if (!still) {
+      if (shockAges.some(([age]) => age < 1.2)) fieldDue = true;
+      if (fieldDue) lastField = now;
+      renderBackground(now, false, fieldDue, shockAges);
+    } else if (bgDirty || (shockAges.length && fieldDue)) {
+      lastField = now;
+      renderBackground(10, true, true, shockAges);
+      bgDirty = false;
+    }
+
+    const sceneOn = !!scene && P > SCENE_START;
+    show(sceneEl, sceneOn);
+    // Reduced motion: the scene is a pure function of P, so an idle reader costs nothing.
+    if (sceneOn && !(still && P === storyP)) {
+      storyP = still ? P : NaN;
+      try {
+        drawStory(now, P, still);
+      } catch (e) {
+        breakScene(e);
+      }
+    }
+  }
+
+  // Mobile browsers fire resize for things that change nothing here; only a real size change relays out.
+  let laidW = -1, laidH = -1, laidDpr = -1;
+  addEventListener('resize', () => {
+    const { w, h } = viewport();
+    if (w !== laidW || h !== laidH || (devicePixelRatio || 1) !== laidDpr) needsLayout = true;
+  });
+  reduceMQ.addEventListener('change', () => {
+    bgDirty = true;
+    storyP = NaN;
+  });
+  // Wake up once the font is in, so the eye never opens in a fallback face.
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
+    needsLayout = true;
+    introAt = performance.now() / 1000 + 0.3;
+    nextBlink = introAt + INTRO + 2;
+  });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

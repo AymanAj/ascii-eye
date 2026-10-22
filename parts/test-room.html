@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Room Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0714;
+    --text: #eadfff;
+    --muted: rgba(214, 196, 255, 0.55);
+    --line: rgba(178, 128, 255, 0.35);
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.4 var(--mono);
+    font-variant-ligatures: none;
+  }
+  .bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  .bar label { display: flex; gap: 6px; align-items: center; color: var(--muted); }
+  .bar input[type="range"] { width: 120px; }
+  select, button {
+    font: inherit;
+    color: var(--text);
+    background: #150c25;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+  }
+  #view { display: block; max-width: 100%; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <label>size
+      <select id="size">
+        <option value="1280x800x12">1280 x 800 / 12</option>
+        <option value="1920x1080x12">1920 x 1080 / 12</option>
+        <option value="390x844x10">390 x 844 / 10</option>
+      </select>
+    </label>
+    <label>lift <input id="lift" type="range" min="0" max="1" step="0.01" value="0"></label>
+    <label>glow <input id="glow" type="range" min="0" max="1" step="0.01" value="0"></label>
+    <label><input id="anim" type="checkbox"> sway</label>
+    <label><input id="reduced" type="checkbox"> reduced</label>
+  </div>
+  <canvas id="view" aria-label="ASCII render of the room and the floating person"></canvas>
+
+<script src="ascii-canvas.js"></script>
+<script src="scene-room.js"></script>
+<script>
+(() => {
+  const P = window.AsciiParts;
+  const RAMP = ' .,:;=+*#%@';
+  const $ = (id) => document.getElementById(id);
+
+  // Same mapping as the renderer: Rec.601 luma, gamma 0.75, then the ramp.
+  const glyphOf = [];
+  for (let l = 0; l < 256; l++) {
+    glyphOf[l] = RAMP[Math.min(RAMP.length - 1, Math.floor(Math.pow(l / 255, 0.75) * RAMP.length))];
+  }
+
+  function drawScene(ctx, w, h, o) {
+    P.drawRoom(ctx, w, h, { t: o.t, reduced: o.reduced, glow: o.glow });
+    const a = P.personAnchor(w, h);
+    P.drawPerson(ctx, w, h, { x: a.x, y: a.y, scale: a.scale, lift: o.lift, t: o.t, reduced: o.reduced });
+  }
+
+  // One pixel per cell, drawn in CSS px through scale(1 / cellW, 1 / cellH), exactly like the contract.
+  function source(w, h, fontSize, o) {
+    const cellW = fontSize * 0.6, cellH = fontSize;
+    const cols = Math.ceil(w / cellW), rows = Math.ceil(h / cellH);
+    const cv = document.createElement('canvas');
+    cv.width = cols;
+    cv.height = rows;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, cols, rows);
+    ctx.setTransform(1 / cellW, 0, 0, 1 / cellH, 0, 0);
+    drawScene(ctx, w, h, o);
+    return { ctx, cols, rows };
+  }
+
+  function dump(w, h, fontSize, lift = 0, extra = {}) {
+    const o = { lift, t: 0, reduced: false, glow: 0, ...extra };
+    const { ctx, cols, rows } = source(w, h, fontSize, o);
+    const d = ctx.getImageData(0, 0, cols, rows).data;
+    const lines = [];
+    for (let r = 0, i = 0; r < rows; r++) {
+      let line = '';
+      for (let c = 0; c < cols; c++, i += 4) line += glyphOf[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8];
+      lines.push(line.replace(/\s+$/, ''));
+    }
+    return lines.join('\n');
+  }
+
+  // Average cost of one frame of scene drawing (room + person) on the tiny source canvas.
+  function bench(w = 1280, h = 800, fontSize = 12, n = 200) {
+    const cellW = fontSize * 0.6, cellH = fontSize;
+    const cv = document.createElement('canvas');
+    cv.width = Math.ceil(w / cellW);
+    cv.height = Math.ceil(h / cellH);
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.setTransform(1 / cellW, 0, 0, 1 / cellH, 0, 0);
+      drawScene(ctx, w, h, { lift: (i % 20) / 20, t: i / 60, reduced: false, glow: 0 });
+    }
+    ctx.getImageData(0, 0, 1, 1); // flush
+    return +((performance.now() - t0) / n).toFixed(3);
+  }
+
+  // Visible view through the real renderer when it is present.
+  let view = $('view');
+  let renderer = null;
+  let current = { w: 1280, h: 800, fontSize: 12 };
+  function show(w, h, fontSize, lift, extra = {}) {
+    current = { w, h, fontSize };
+    const o = { lift, t: 0, reduced: false, glow: 0, ...extra };
+    if (!P.createAsciiRenderer) return 'renderer missing';
+    if (!renderer || renderer.fontSize !== fontSize) {
+      renderer = P.createAsciiRenderer(view, {
+        fontFamily: getComputedStyle(document.body).fontFamily,
+        fontSize,
+        ramp: RAMP,
+        palette: {
+          bg: '#0b0714',
+          purple: ['#3d2b63', '#6e51a8', '#a98be6', '#e2d6ff'],
+          lime: ['#3f6212', '#7cc22e', '#c7f37a'],
+          white: '#ffffff',
+        },
+      });
+      renderer.fontSize = fontSize;
+      renderer.size = '';
+    }
+    const key = `${w}x${h}`;
+    if (renderer.size !== key) {
+      renderer.resize(w, h, window.devicePixelRatio || 1);
+      renderer.size = key;
+    }
+    drawScene(renderer.begin(), w, h, o);
+    renderer.render({ reveal: 1 });
+    return `${renderer.cols}x${renderer.rows}`;
+  }
+
+  const controls = () => {
+    const [w, h, fs] = $('size').value.split('x').map(Number);
+    return { w, h, fs, lift: +$('lift').value, glow: +$('glow').value, reduced: $('reduced').checked };
+  };
+  const redraw = (t = 0) => {
+    const c = controls();
+    show(c.w, c.h, c.fs, c.lift, { glow: c.glow, reduced: c.reduced, t });
+  };
+  for (const id of ['size', 'lift', 'glow', 'reduced']) $(id).addEventListener('input', () => redraw());
+
+  let raf = 0;
+  $('anim').addEventListener('change', (e) => {
+    cancelAnimationFrame(raf);
+    if (!e.target.checked) return redraw();
+    const loop = (ms) => {
+      redraw(ms / 1000);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+  });
+
+  // Full-resolution drawing without the glyph pass, to judge the shapes themselves.
+  function raw(w, h, lift = 0, extra = {}) {
+    renderer = null;
+    // The renderer may have claimed the view canvas for WebGL, which has no 2D context, so swap in a
+    // fresh canvas; the next show() builds its renderer on that one.
+    const fresh = view.cloneNode(false);
+    view.replaceWith(fresh);
+    view = fresh;
+    view.width = w;
+    view.height = h;
+    view.style.width = w + 'px';
+    view.style.height = h + 'px';
+    const ctx = view.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    drawScene(ctx, w, h, { lift, t: 0, reduced: false, glow: 0, ...extra });
+    return `${w}x${h}`;
+  }
+
+  // Silhouette bounds in CSS px next to the window and bed, to check every limb stays backlit.
+  function bounds(w, h, lift = 0, t = 0) {
+    const cv = document.createElement('canvas');
+    cv.width = w;
+    cv.height = h;
+    const ctx = cv.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    const a = P.personAnchor(w, h);
+    P.drawPerson(ctx, w, h, { x: a.x, y: a.y, scale: a.scale, lift, t, reduced: false });
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let x0 = w, x1 = -1, y0 = h, y1 = -1;
+    for (let y = 0, i = 0; y < h; y++) {
+      for (let x = 0; x < w; x++, i += 4) {
+        if (d[i] < 128) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    return { x0, x1, y0, y1, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, anchor: a };
+  }
+
+  window.test = { dump, show, raw, bench, bounds, redraw };
+  redraw(); // synchronous first paint: the pane may be hidden, which pauses rAF
+  // The renderer measures the cell width once, so rebuild it when the web font arrives.
+  if (document.fonts) document.fonts.load('12px "JetBrains Mono"').then(() => {
+    renderer = null;
+    redraw();
+  }, () => {});
+})();
+</script>
+</body>
+</html>

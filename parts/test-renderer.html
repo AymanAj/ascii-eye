@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ASCII Renderer Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0714;
+    --text: #eadfff;
+    --muted: rgba(214, 196, 255, 0.5);
+    --panel: rgba(21, 12, 37, 0.88);
+    --line: rgba(178, 128, 255, 0.35);
+    --iris-hi: #c8a0ff;
+    --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.4 var(--mono);
+    overflow: hidden;
+  }
+  #out { position: fixed; left: 0; top: 0; display: block; }
+
+  .hud {
+    position: fixed;
+    left: 16px;
+    bottom: 16px;
+    max-width: calc(100% - 32px);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+  }
+  .hud label { display: flex; align-items: center; gap: 10px; }
+  .hud input { width: 160px; accent-color: var(--iris-hi); }
+  .hud output { min-width: 3ch; font-variant-numeric: tabular-nums; }
+  .hud .stats { color: var(--muted); }
+</style>
+</head>
+<body>
+  <canvas id="out" aria-label="ASCII renderer test scene"></canvas>
+  <div class="hud">
+    <label>reveal <input id="reveal" type="range" min="0" max="1" step="0.01" value="1"> <output id="revealOut">1.00</output></label>
+    <span class="stats" id="stats"></span>
+  </div>
+
+<script src="ascii-canvas.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('out');
+  const slider = $('reveal');
+  const revealOut = $('revealOut');
+  const stats = $('stats');
+
+  const FONT = '"JetBrains Mono", ui-monospace, monospace';
+  // ?backend=2d claims the canvas for 2D first, which exercises the renderer's fallback path.
+  // ?backend=2d-cells also hides canvas textRendering, like browsers that cannot turn ligatures
+  // off, which exercises the per-cell atlas path.
+  const forced = new URLSearchParams(location.search).get('backend');
+  if (forced === '2d-cells') delete CanvasRenderingContext2D.prototype.textRendering;
+  if (forced === '2d' || forced === '2d-cells') canvas.getContext('2d');
+  const renderer = AsciiParts.createAsciiRenderer(canvas, {
+    fontFamily: FONT,
+    fontSize: 12,
+    ramp: ' .,:;=+*#%@',
+    palette: {
+      bg: '#0b0714',
+      purple: ['#3d2b63', '#6e51a8', '#a98be6', '#e2d6ff'],
+      lime: ['#3f6212', '#7cc22e', '#c7f37a'],
+      white: '#ffffff',
+    },
+  });
+
+  // Busy on purpose: the wall gradient puts a glyph in every cell, the worst case for render().
+  function drawScene(ctx, w, h) {
+    const s = Math.min(w, h);
+    let g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#120a22');
+    g.addColorStop(1, '#2a1a4a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, w, h);
+
+    // Black to white across the full width: walks the whole ramp, ending in the white family.
+    g = ctx.createLinearGradient(0, 0, w, 0);
+    g.addColorStop(0, '#000000');
+    g.addColorStop(1, '#ffffff');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, h * 0.05, w, Math.max(36, h * 0.12));
+
+    // Purple shapes at the four glyph levels.
+    ctx.fillStyle = '#6e51a8';
+    ctx.beginPath();
+    ctx.arc(w * 0.13, h * 0.58, s * 0.13, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#a98be6';
+    ctx.lineWidth = Math.max(16, s * 0.03);
+    ctx.beginPath();
+    ctx.arc(w * 0.13, h * 0.58, s * 0.21, 0, Math.PI * 2);
+    ctx.stroke();
+    g = ctx.createLinearGradient(0, h * 0.3, 0, h * 0.9);
+    g.addColorStop(0, '#3d2b63');
+    g.addColorStop(1, '#e2c8ff');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.roundRect(w * 0.29, h * 0.3, w * 0.12, h * 0.6, 18);
+    ctx.fill();
+
+    // Lime cone: bright core, soft edges.
+    const ax = w * 0.6, ay = h * 0.28, half = w * 0.1, by = h * 0.95;
+    g = ctx.createLinearGradient(ax - half, 0, ax + half, 0);
+    g.addColorStop(0, 'rgba(163, 230, 53, 0)');
+    g.addColorStop(0.3, 'rgba(163, 230, 53, 0.55)');
+    g.addColorStop(0.5, '#d9f99d');
+    g.addColorStop(0.7, 'rgba(163, 230, 53, 0.55)');
+    g.addColorStop(1, 'rgba(163, 230, 53, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(ax - 6, ay);
+    ctx.lineTo(ax + 6, ay);
+    ctx.lineTo(ax + half, by);
+    ctx.lineTo(ax - half, by);
+    ctx.closePath();
+    ctx.fill();
+
+    // White disc with a lavender halo.
+    const cx = w * 0.85, cy = h * 0.6, rad = s * 0.2;
+    g = ctx.createRadialGradient(cx, cy, 0, cx, cy, rad);
+    g.addColorStop(0, '#ffffff');
+    g.addColorStop(0.4, '#ffffff');
+    g.addColorStop(0.7, 'rgba(200, 160, 255, 0.55)');
+    g.addColorStop(1, 'rgba(200, 160, 255, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  let reveal = 1;
+
+  function frame() {
+    const ctx = renderer.begin();
+    drawScene(ctx, innerWidth, innerHeight);
+    renderer.render({ reveal });
+    stats.textContent = `${renderer.cols}×${renderer.rows} cells · ` +
+      `cell ${renderer.cellW.toFixed(2)}×${renderer.cellH.toFixed(2)}px · ${renderer.backend}`;
+  }
+
+  function fit(dpr) {
+    renderer.resize(innerWidth, innerHeight, dpr || devicePixelRatio || 1);
+  }
+
+  const countDrawn = (text) => text.length - (text.match(/[ \n]/g) || []).length;
+
+  // dpr overrides the device ratio, to check odd ratios (1.1, 2.625) on any screen.
+  function renderAt(value, dpr) {
+    reveal = Math.max(0, Math.min(1, value));
+    slider.value = reveal;
+    revealOut.textContent = reveal.toFixed(2);
+    fit(dpr);
+    frame();
+    return {
+      reveal,
+      cols: renderer.cols,
+      rows: renderer.rows,
+      cellW: renderer.cellW,
+      cellH: renderer.cellH,
+      drawn: countDrawn(renderer.dump()),
+    };
+  }
+
+  // Worst case for run merging: every cell a different random colour and brightness.
+  function scatterNoise(ctx) {
+    const { cols, rows } = renderer;
+    const img = ctx.getImageData(0, 0, cols, rows);
+    let seed = 7;
+    const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+    for (let i = 0; i < img.data.length; i += 4) {
+      const v = 40 + rnd() * 215, hue = rnd();
+      img.data[i] = hue < 0.33 ? v * 0.7 : v;
+      img.data[i + 1] = hue < 0.33 ? v : v * 0.6;
+      img.data[i + 2] = hue < 0.33 ? v * 0.3 : v;
+      img.data[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  const stat = (times) => {
+    const n = times.length;
+    return {
+      avg: +(times.reduce((a, b) => a + b, 0) / n).toFixed(3),
+      median: +times.slice().sort((a, b) => a - b)[n >> 1].toFixed(3),
+      min: +Math.min(...times).toFixed(3),
+      max: +Math.max(...times).toFixed(3),
+    };
+  };
+
+  // Times real frames at a fixed size so results compare across windows. The scene is redrawn
+  // before every render(), like the page does: Chrome defers 2D raster until getImageData, so
+  // render() pays for flushing the scene's draw calls. `render` is render() alone, `frame` is
+  // begin + draw + render. The noise pass reads the source back itself, so it is left untimed.
+  function perf(n = 30, { width = 1920, height = 1080, dpr = 1, reveal: at = 1, noise = false } = {}) {
+    const tr = performance.now();
+    renderer.resize(width, height, dpr);
+    const resizeMs = +(performance.now() - tr).toFixed(1);
+    const renderTimes = [], frameTimes = [];
+    for (let k = 0; k < n + 5; k++) {
+      const t0 = performance.now();
+      const ctx = renderer.begin();
+      drawScene(ctx, width, height);
+      const t1 = performance.now();
+      if (noise) scatterNoise(ctx);
+      const t2 = performance.now();
+      renderer.render({ reveal: at });
+      const t3 = performance.now();
+      if (k < 5) continue; // warm-up
+      renderTimes.push(t3 - t2);
+      frameTimes.push(t1 - t0 + (t3 - t2));
+    }
+    const result = {
+      size: `${width}x${height}@${dpr}`,
+      backend: renderer.backend,
+      reveal: at,
+      noise,
+      resizeMs,
+      cols: renderer.cols,
+      rows: renderer.rows,
+      cells: renderer.cols * renderer.rows,
+      drawn: countDrawn(renderer.dump()),
+      runs: n,
+      render: stat(renderTimes),
+      frame: stat(frameTimes),
+    };
+    renderAt(reveal);
+    return result;
+  }
+
+  // render() plus a 1px readback, which waits for the GPU to finish the frame. Compare against
+  // reveal 0 (background only) to see the cost the GPU adds; WebGL backend only.
+  function frameCost(n = 20, { width = 1920, height = 1080, dpr = 1, reveal: at = 1 } = {}) {
+    const gl = canvas.getContext('webgl2');
+    if (!gl) return 'webgl2 backend only';
+    renderer.resize(width, height, dpr);
+    drawScene(renderer.begin(), width, height);
+    const px = new Uint8Array(4);
+    const once = (rv) => {
+      const t0 = performance.now();
+      renderer.render({ reveal: rv });
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return performance.now() - t0;
+    };
+    const avg = (rv) => {
+      for (let k = 0; k < 3; k++) once(rv);
+      let s = 0;
+      for (let k = 0; k < n; k++) s += once(rv);
+      return +(s / n).toFixed(2);
+    };
+    const result = { size: `${width}x${height}@${dpr}`, bgOnly: avg(0), frame: avg(at), reveal: at };
+    renderAt(reveal);
+    return result;
+  }
+
+  window.test = {
+    renderAt,
+    perf,
+    frameCost,
+    dump: (mode) => renderer.dump(mode),
+    renderer,
+  };
+
+  slider.addEventListener('input', () => {
+    reveal = +slider.value;
+    revealOut.textContent = reveal.toFixed(2);
+    frame();
+  });
+  addEventListener('resize', () => renderAt(reveal));
+
+  renderAt(1);
+  // The first draw may use a fallback face; re-measure once the web font is in.
+  if (document.fonts) {
+    document.fonts.load(`12px ${FONT}`).then(() => renderAt(reveal), () => {});
+  }
+})();
+</script>
+</body>
+</html>

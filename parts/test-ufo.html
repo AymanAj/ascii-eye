@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UFO Parts Test</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; --bg: #0b0714; --text: #eadfff; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); overflow: hidden; }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #out {
+    position: fixed;
+    inset: 0;
+    margin: 0;
+    padding: 8px;
+    overflow: auto;
+    font: 10px/1 ui-monospace, Consolas, monospace;
+    white-space: pre;
+    background: var(--bg);
+  }
+  #out:empty { display: none; }
+</style>
+</head>
+<body>
+<canvas id="view" aria-label="ASCII render of the saucer and beam"></canvas>
+<main><pre id="out"></pre></main>
+<script src="ascii-canvas.js"></script>
+<script src="scene-room.js"></script>
+<script src="scene-ufo.js"></script>
+<script>
+(() => {
+  const AP = window.AsciiParts;
+  const FONT = '"JetBrains Mono", ui-monospace, monospace';
+  const RAMP = ' .,:;=+*#%@';
+  const PALETTE = {
+    bg: '#0b0714',
+    purple: ['#3d2b63', '#6e51a8', '#a98be6', '#e2d6ff'],
+    lime: ['#3f6212', '#7cc22e', '#c7f37a'],
+    white: '#ffffff',
+  };
+  const makeRenderer = (canvas, fontSize) =>
+    AP.createAsciiRenderer(canvas, { fontFamily: FONT, fontSize, ramp: RAMP, palette: PALETTE });
+
+  // The scene as the orchestrator places it, back to front: room, beam, person, ship.
+  // Options: room, beam, ship (default on unless false), open, intensity, lights, bank, dx, t, reduced,
+  // lift, glow, zoom/cx/cy (camera), alpha (the caller's globalAlpha for the beam and ship).
+  function drawScene(ctx, w, h, o) {
+    ctx.save();
+    if (o.zoom) {
+      const cx = o.cx == null ? w / 2 : o.cx, cy = o.cy == null ? h / 2 : o.cy;
+      ctx.translate(cx, cy);
+      ctx.scale(o.zoom, o.zoom);
+      ctx.translate(-cx, -cy);
+    }
+    const a = AP.ufoAnchor(w, h);
+    const p = AP.personAnchor(w, h);
+    const t = o.t || 0;
+    const reduced = !!o.reduced;
+    const alpha = o.alpha == null ? 1 : o.alpha;
+    if (o.room) AP.drawRoom(ctx, w, h, { t, reduced, glow: o.glow || 0 });
+    if (o.beam !== false) {
+      ctx.globalAlpha = alpha;
+      AP.drawBeam(ctx, w, h, {
+        x: a.x,
+        topY: a.y + 0.3 * a.size,
+        bottomY: 0.86 * h,
+        topWidth: 0.5 * a.size,
+        bottomWidth: Math.max(1.4 * a.size, 1.1 * p.scale),
+        open: o.open == null ? 1 : o.open,
+        intensity: o.intensity == null ? 1 : o.intensity,
+        t,
+        reduced,
+      });
+      ctx.globalAlpha = 1;
+    }
+    if (o.room) AP.drawPerson(ctx, w, h, { x: p.x, y: p.y, scale: p.scale, lift: o.lift || 0, t, reduced });
+    if (o.ship !== false) {
+      ctx.globalAlpha = alpha;
+      AP.drawUfo(ctx, w, h, {
+        x: a.x + (o.dx || 0),
+        y: a.y,
+        size: a.size,
+        bank: o.bank || 0,
+        lights: o.lights == null ? 1 : o.lights,
+        t,
+        reduced,
+      });
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  // Dumps go through the shipped renderer on a detached canvas, one per font size.
+  const offscreen = new Map();
+  function frame(w, h, fontSize, o = {}) {
+    let r = offscreen.get(fontSize);
+    if (!r) {
+      r = makeRenderer(document.createElement('canvas'), fontSize);
+      offscreen.set(fontSize, r);
+    }
+    if (r.lastW !== w || r.lastH !== h) {
+      r.resize(w, h, 1);
+      r.lastW = w;
+      r.lastH = h;
+    }
+    drawScene(r.begin(), w, h, o);
+    r.render({ reveal: o.reveal == null ? 1 : o.reveal });
+    return r;
+  }
+
+  // Rows of the rendered grid: glyphs, or colour buckets with mode 'color'
+  // (purple levels 1-4, lime levels a-c, white W).
+  const grid = (w, h, fontSize, o = {}, mode) => frame(w, h, fontSize, o).dump(mode).split('\n');
+
+  // Crop to the drawn content plus a one-cell margin, so dumps stay readable.
+  function trim(lines) {
+    const top = lines.findIndex((l) => l.trim());
+    if (top < 0) return '';
+    let bottom = lines.length - 1;
+    while (!lines[bottom].trim()) bottom--;
+    let left = Infinity, right = 0;
+    for (let r = top; r <= bottom; r++) {
+      const a = lines[r].search(/\S/);
+      if (a >= 0) {
+        left = Math.min(left, a);
+        right = Math.max(right, lines[r].trimEnd().length);
+      }
+    }
+    left = Math.max(0, left - 1);
+    return lines.slice(Math.max(0, top - 1), bottom + 2).map((l) => l.slice(left, right + 1)).join('\n');
+  }
+  const text = (lines, o) => (o.trim ? trim(lines) : lines.join('\n'));
+
+  const dump = (w, h, fontSize, o = {}) => text(grid(w, h, fontSize, o), o);
+  const hues = (w, h, fontSize, o = {}) => text(grid(w, h, fontSize, o, 'color'), o);
+
+  // Bucket counts (purple 1-4, lime a-c, white W) over the whole grid or rows r0..r1 / cols c0..c1.
+  function stats(w, h, fontSize, o = {}) {
+    const lines = grid(w, h, fontSize, o, 'color');
+    const r0 = o.r0 || 0, r1 = o.r1 == null ? lines.length - 1 : o.r1;
+    const out = { cols: lines[0].length, rows: lines.length, purple: 0, lime: 0, white: 0, buckets: {} };
+    for (let r = r0; r <= r1; r++) {
+      const line = lines[r].slice(o.c0 || 0, o.c1 == null ? undefined : o.c1 + 1);
+      for (const ch of line) {
+        if (ch === ' ') continue;
+        out.buckets[ch] = (out.buckets[ch] || 0) + 1;
+        if (ch === 'W') out.white++;
+        else if (ch >= 'a') out.lime++;
+        else out.purple++;
+      }
+    }
+    return out;
+  }
+
+  // Frame-to-frame glyph stability: a reversal is a glyph that holds for one frame and flips back (A-B-A).
+  function flicker(w, h, fontSize, o = {}, seconds = 2, fps = 60) {
+    const frames = [];
+    for (let f = 0; f <= seconds * fps; f++) {
+      frames.push(grid(w, h, fontSize, { ...o, t: (o.t || 0) + f / fps }).join(''));
+    }
+    const n = frames[0].length;
+    let reversals = 0, worst = -1, worstChanges = 0;
+    for (let i = 0; i < n; i++) {
+      let changes = 0;
+      for (let f = 1; f < frames.length; f++) {
+        const prev = frames[f - 1][i], cur = frames[f][i];
+        if (cur !== prev) changes++;
+        if (f + 1 < frames.length && cur !== prev && frames[f + 1][i] === prev) reversals++;
+      }
+      if (changes > worstChanges) {
+        worstChanges = changes;
+        worst = i;
+      }
+    }
+    const seq = worst < 0 ? '' : frames.map((s) => s[worst]).join('');
+    return { reversals, worstChanges, worstSeq: seq };
+  }
+
+  // Visible preview through the same renderer.
+  const view = document.getElementById('view');
+  let viewR = null, viewFont = 0;
+  function render(o = {}) {
+    const w = innerWidth, h = innerHeight, fontSize = o.fontSize || (w < 600 ? 10 : 12);
+    if (!viewR || viewFont !== fontSize) {
+      viewR = makeRenderer(view, fontSize);
+      viewFont = fontSize;
+    }
+    viewR.resize(w, h, devicePixelRatio || 1);
+    drawScene(viewR.begin(), w, h, o);
+    viewR.render({ reveal: 1 });
+  }
+
+  const out = document.getElementById('out');
+  const show = (s) => { out.textContent = s || ''; return (s || '').length; };
+
+  let anim = null;
+  function play(o = {}) {
+    const t0 = performance.now();
+    const tick = (now) => {
+      render({ ...o, t: (now - t0) / 1000 });
+      anim = requestAnimationFrame(tick);
+    };
+    cancelAnimationFrame(anim);
+    anim = requestAnimationFrame(tick);
+  }
+
+  window.test = { drawScene, frame, grid, dump, hues, stats, flicker, render, show, play };
+  const params = new URLSearchParams(location.search);
+  const initial = { room: params.has('room') };
+  render(initial); // draw synchronously: rAF may be paused while the pane is hidden
+  // The first draw may use a fallback face; cell widths change once the web font is in.
+  if (document.fonts) {
+    document.fonts.load(`12px ${FONT}`).then(() => {
+      offscreen.clear();
+      render(initial);
+    }, () => {});
+  }
+  if (params.has('play')) play(initial);
+})();
+</script>
+</body>
+</html>
