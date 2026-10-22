@@ -194,6 +194,37 @@
   }
   .hint.gone { opacity: 0; }
 
+  /* Music toggle: just glyphs, no box, so it sits in the art instead of on top of it. The halo separates
+     it from the ASCII behind. Still when stopped; while playing its equalizer moves with the music, so
+     motion means "playing". It fades in with the controls and stays through the whole scroll. */
+  .music {
+    position: fixed;
+    top: 12px;
+    right: 14px;
+    z-index: 5;
+    padding: 6px 4px;
+    border: 0;
+    background: none;
+    font: 12px/1 var(--mono);
+    letter-spacing: 0.04em;
+    white-space: pre;
+    color: var(--muted);
+    text-shadow: 0 0 6px var(--bg), 0 0 14px var(--bg);
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+    opacity: 0;
+    transition: opacity 240ms var(--ease-out), transform 160ms var(--ease-out), color 150ms ease;
+  }
+  .music.in { opacity: 1; }
+  .music[aria-pressed="true"] { color: var(--lime); }
+  @media (hover: hover) and (pointer: fine) {
+    .music:hover { color: var(--text); }
+    .music[aria-pressed="true"]:hover { color: var(--lime-hi); }
+  }
+  .music:active { transform: scale(0.97); }
+  .music:focus-visible { outline: 2px solid var(--iris-hi); outline-offset: 3px; }
+
   .sr-only {
     position: absolute;
     width: 1px;
@@ -230,6 +261,11 @@
   </main>
   <pre class="eye dive" id="dive" aria-hidden="true"></pre>
   <canvas class="scene" id="scene" aria-hidden="true"></canvas>
+  <!-- "Strange Stuff" by Matt Harris, from the YouTube Audio Library. The file is not bundled: the toggle
+       only appears once audio/strange-stuff.mp3 exists next to this page. -->
+  <button class="music" id="music" type="button" aria-pressed="false" aria-label="Play music: Strange Stuff by Matt Harris"
+    hidden><span id="musicIcon">|&gt;</span> <span id="musicText">strange stuff</span></button>
+  <audio id="track" src="audio/strange-stuff.mp3" preload="none" loop></audio>
   <div class="track" aria-hidden="true"></div>
 
   <script src="parts/ascii-canvas.js"></script>
@@ -930,6 +966,90 @@
   });
   btn.addEventListener('pointerleave', () => { hovering = false; });
 
+  // ---------- music ----------
+  const musicBtn = $('music');
+  const musicIcon = $('musicIcon');
+  const musicText = $('musicText');
+  const track = $('track');
+  const EQ = ' .:-=+*#';
+  // Log-spaced band edges in FFT bins (~190 Hz each): music lives low, so even steps would leave the
+  // right half of the meter empty.
+  const BANDS = [1, 2, 4, 7, 12, 20, 34, 58];
+  let audioCtx = null, analyser = null, gainNode = null, bins = null, playing = false, eqText = '';
+
+  // Show the toggle only if the track is actually there.
+  fetch(track.getAttribute('src'), { method: 'HEAD' })
+    .then((r) => { if (r.ok) musicBtn.hidden = false; })
+    .catch(() => {});
+
+  function setupAudio() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaElementSource(track);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8; // calmer bars: glyph flips every frame read as noise
+    gainNode = audioCtx.createGain();
+    gainNode.gain.value = 0;
+    source.connect(analyser);
+    analyser.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    bins = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  async function toggleMusic() {
+    if (!audioCtx) setupAudio();
+    const t = audioCtx.currentTime;
+    const gain = gainNode.gain;
+    gain.cancelScheduledValues(t);
+    gain.setValueAtTime(gain.value, t);
+    if (!playing) {
+      playing = true;
+      await audioCtx.resume();
+      try {
+        await track.play();
+      } catch (e) {
+        playing = false;
+        return;
+      }
+      // Asymmetric on purpose: the music swells in (~0.8s, ease-out) and stops fast (~0.2s), because
+      // starting is the deliberate part and stopping is the page answering.
+      gain.setTargetAtTime(0.7, t, 0.25);
+    } else {
+      playing = false;
+      gain.setTargetAtTime(0, t, 0.06);
+      setTimeout(() => { if (!playing) track.pause(); }, 300);
+    }
+    musicBtn.setAttribute('aria-pressed', String(playing));
+    musicBtn.setAttribute('aria-label', playing ? 'Stop music' : 'Play music: Strange Stuff by Matt Harris');
+    musicIcon.textContent = playing ? '[]' : '|>';
+    if (!playing) {
+      eqText = '';
+      musicText.textContent = 'strange stuff';
+    }
+  }
+  musicBtn.addEventListener('click', toggleMusic);
+
+  // While playing, the label becomes a 7-band ASCII equalizer driven by the music itself.
+  function updateEq(still) {
+    if (!playing || !analyser) return;
+    let s = '';
+    if (still) {
+      s = '.:=#=:.'; // reduced motion: a still meter that just says "playing"
+    } else {
+      analyser.getByteFrequencyData(bins);
+      for (let b = 0; b < 7; b++) {
+        let peak = 0;
+        for (let k = BANDS[b]; k < BANDS[b + 1]; k++) if (bins[k] > peak) peak = bins[k];
+        const v = Math.pow(peak / 255, 1.4); // a little contrast so quiet bands sit low instead of all mid
+        s += EQ[Math.min(EQ.length - 1, (v * EQ.length) | 0)];
+      }
+    }
+    if (s !== eqText) {
+      eqText = s;
+      musicText.textContent = s;
+    }
+  }
+
   hint.textContent = fineMQ.matches ? 'move your cursor' : 'tap to aim the eye';
   $('eyeImg').setAttribute('aria-label', fineMQ.matches ? 'An ASCII eye that follows your cursor' : 'An ASCII eye that looks where you tap');
 
@@ -1311,8 +1431,10 @@
     }
     if (!controlsIn && now >= introAt + 0.06) {
       controls.classList.add('in');
+      musicBtn.classList.add('in');
       controlsIn = true;
     }
+    updateEq(still);
 
     const ix = gazeX.x * MAX_X, iy = gazeY.x * MAX_Y;
     const pupil = PR + 0.8 * dilate.x;
