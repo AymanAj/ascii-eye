@@ -992,6 +992,7 @@
 
   // Where the knocks land on the screen: beside the hover spot, so the ship has a short way to recede.
   const impactAt = (w, h, ua) => ({ x: ua.x + 0.1 * w, y: ua.y + 0.12 * h });
+  const KNOCKS = [0.3775, 0.4125, 0.435]; // the scroll positions of the three knocks on the glass
 
   // Where the ship is at progress P: it comes from our side of the screen, so it bursts through the
   // impact point close to us (big) and recedes into the room to its hover spot by 0.60. That is an
@@ -1022,15 +1023,73 @@
     ctx.scale(cam, cam);
     ctx.translate(-w / 2, -h / 2);
 
+    // Three knocks from outside. Each one jolts the camera (about a cell: anything smaller falls between
+    // ASCII cells) and makes the lamps stutter. Both are tied to scroll, not time, so a reader parked on
+    // a knock sees no strobing, and both are dropped for reduced motion.
+    let jx = 0, jy = 0, flick = 0;
+    if (!still) {
+      for (const c of KNOCKS) {
+        const after = P - c;
+        if (after >= 0 && after < 0.012) {
+          const j = 1 - after / 0.012; // the shake dies out as you scroll past the hit
+          jx += 9 * j * Math.sin(after * 2400);
+          jy += 6 * j * Math.cos(after * 3100);
+        }
+        const near = 1 - smoothstep(0, 0.012, Math.abs(after));
+        flick = Math.max(flick, near * (Math.sin(after * 900) > 0 ? 0.5 : 0.12));
+      }
+    }
+    ctx.translate(jx, jy);
+
     // The lamps die as the glass gives, all the way to black, so the alien light is the only light.
-    // Brightness change, so a gentle in-out.
+    // Brightness change, so a gentle in-out; the knocks add their stutter on top.
     const dark = smoothstep(0.4, 0.54, P);
+    const lampsOut = dark + (1 - dark) * flick;
     if (dark < 1) {
       AsciiParts.drawRoom(ctx, w, h, { t: now, reduced: still, glow: 0 });
-      if (dark > 0) {
-        ctx.fillStyle = `rgba(4, 2, 9, ${dark})`;
+      if (lampsOut > 0) {
+        ctx.fillStyle = `rgba(4, 2, 9, ${lampsOut})`;
         ctx.fillRect(-w, -h, w * 3, h * 3); // oversized: the camera may still be scaled below 1
       }
+    }
+
+    // Before it breaks in, the ship is right behind the glass on our side: its lime light leaks into the
+    // room and its saucer shadow sits in that light, both growing knock by knock. Cause before effect.
+    // Once it is through, its own lights take over.
+    const knocked = (a, b) => smoothstep(a, b, P);
+    const approach =
+      0.2 * knocked(0.33, 0.37) + 0.25 * knocked(0.37, 0.385) + 0.25 * knocked(0.405, 0.42) + 0.3 * knocked(0.43, 0.44);
+    const leak = approach * (1 - smoothstep(0.44, 0.5, P));
+    if (leak > 0) {
+      const i = impactAt(w, h, ua);
+      const R = Math.hypot(w, h) * (0.35 + 0.25 * approach);
+      const glowFill = ctx.createRadialGradient(i.x, i.y, 0, i.x, i.y, R);
+      glowFill.addColorStop(0, `rgba(120, 230, 60, ${0.75 * leak})`);
+      glowFill.addColorStop(0.5, `rgba(120, 230, 60, ${0.3 * leak})`);
+      glowFill.addColorStop(1, 'rgba(120, 230, 60, 0)');
+      ctx.fillStyle = glowFill;
+      ctx.fillRect(-w, -h, w * 3, h * 3);
+      // The shadow slides in from the upper right toward the impact and grows as it closes in; reduced
+      // motion keeps it in place and only lets it darken.
+      const sx = still ? i.x : i.x + (1 - approach) * 0.3 * w;
+      const sy = still ? i.y : i.y - (1 - approach) * 0.12 * h;
+      const s = ua.size * (0.6 + 1.1 * approach);
+      const blob = (x, y, r, sy2, a) => {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(1, sy2);
+        const g = ctx.createRadialGradient(0, 0, r * 0.3, 0, 0, r);
+        g.addColorStop(0, `rgba(4, 2, 9, ${a})`);
+        g.addColorStop(0.7, `rgba(4, 2, 9, ${0.7 * a})`);
+        g.addColorStop(1, 'rgba(4, 2, 9, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      };
+      blob(sx, sy, s, 0.32, 0.85 * leak); // the disc
+      blob(sx, sy - s * 0.2, s * 0.38, 0.8, 0.85 * leak); // the dome
     }
 
     const ship = shipAt(P, w, h, ua, still);
@@ -1129,7 +1188,7 @@
         // The knocks build: a small star, a wider web, then the whole pane.
         crack: 0.1 * knock(0.37, 0.385) + 0.22 * knock(0.405, 0.42) + 0.68 * knock(0.43, 0.44),
         // Each knock flares at the impact while the scroll passes it, so the hits read as hits.
-        hit: Math.max(...[0.3775, 0.4125, 0.435].map((c) => 1 - smoothstep(0, 0.012, Math.abs(P - c)))),
+        hit: Math.max(...KNOCKS.map((c) => 1 - smoothstep(0, 0.012, Math.abs(P - c)))),
         burst: seg(P, 0.44, 0.6),
         reduced: still,
       });
